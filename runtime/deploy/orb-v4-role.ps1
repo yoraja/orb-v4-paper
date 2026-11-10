@@ -25,6 +25,11 @@ $env:ORB_V4_ENGINE_ALLOW = '1'
 if ($Role -eq 'Backup') { $env:ORB_V4_ALLOW_HEARTBEAT_FETCH = '1' }
 $env:ORB_V4_HOME = Join-Path $Base 'code'
 $env:ORB_V4_RUN = Join-Path $Base 'run'
+if (-not $env:ORB_V4_PAGES) { $env:ORB_V4_PAGES = Join-Path $Base 'pages' }
+if (-not $env:ORB_DASHBOARD_PASSWORD) {
+  $DashPw = Join-Path $Base 'dashboard-password.txt'
+  if (Test-Path $DashPw) { $env:ORB_DASHBOARD_PASSWORD = (Get-Content -LiteralPath $DashPw -Raw).Trim() }
+}
 $env:PYTHONUTF8 = '1'
 $env:TZ = 'America/Los_Angeles'
 if ($Role -eq 'SelfTest') {

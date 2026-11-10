@@ -255,9 +255,29 @@ class Runner:
             if rc in (0, 3):
                 self._note_completed(slot, decision.fence_token)
             ran.append(slot)
+            if decision.publish_allowed:
+                self._publish_slot(slot, rc, dry_run=dry_run)
         decision.orders_submitted = total
         decision.slots = ran
         return decision
+
+
+    def _publish_slot(self, slot: Slot, rc: int, *, dry_run: bool) -> None:
+        """Best-effort dashboard publish after a slot. Never raises or delays trading."""
+        try:
+            from paper_broker.failover.dashboard_publish import schedule_publish
+            takeover = self._takeover_since() if self.role == "backup" else None
+            schedule_publish(
+                host=self.host,
+                role=self.role,
+                publish_allowed=True,
+                slot=slot,
+                rc=rc,
+                takeover_since_utc=takeover,
+                dry_run=dry_run,
+            )
+        except Exception:
+            pass
 
     def _we_hold(self, doc: dict | None) -> bool:
         return bool(

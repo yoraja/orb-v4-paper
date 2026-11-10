@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -58,8 +59,15 @@ class FailoverTests(unittest.TestCase):
         os.environ.pop("ORB_V4_ENGINE_ALLOW", None)
         os.environ.pop("ORB_V4_ALLOW_HEARTBEAT_FETCH", None)
         self.calls = []
+        self.publishes = []
+        self._pub_patch = patch(
+            "paper_broker.failover.dashboard_publish.schedule_publish",
+            side_effect=lambda **kw: self.publishes.append(kw) or "stubbed",
+        )
+        self._pub_patch.start()
 
     def tearDown(self):
+        self._pub_patch.stop()
         transport_mod.set_transport_factory(None)
         os.environ.pop("ORB_V4_FENCE_TOKEN", None)
         os.environ.pop("ORB_V4_FENCE_REQUIRED", None)
@@ -451,6 +459,91 @@ class FailoverTests(unittest.TestCase):
         self.assertEqual(recovery_status(rec), "mismatch")
         self.assertEqual(rec.read_text(encoding="utf-8"), "changed\n")
         EVIDENCE["publish_venv_hooks"] = "box does not overwrite a newer YOPC liveness heartbeat; symlink venv and dashboard root are refused; recovery bytes are not rewritten"
+
+
+    def test_primary_publishes_after_successful_slot(self):
+        when = pt(2026, 11, 9, 6, 30, 30)
+        decision = self.runner("primary", when).run(self.executor)
+        self.assertEqual(decision.action, "run")
+        self.assertEqual(len(self.publishes), 1)
+        pub = self.publishes[0]
+        self.assertEqual(pub["host"], "yopc")
+        self.assertEqual(pub["role"], "primary")
+        self.assertTrue(pub["publish_allowed"])
+        self.assertEqual(pub["slot"].kind, "scan")
+        self.assertEqual(pub["slot"].hhmm, "0630")
+        self.assertEqual(pub["rc"], 0)
+        self.assertFalse(pub["dry_run"])
+        EVIDENCE["primary_publish"] = "primary schedules a dashboard publish after a successful slot"
+
+    def test_backup_idle_does_not_publish(self):
+        when = pt(2026, 11, 6, 10, 20)
+        decision = self.runner("backup", when, heartbeat=hb(pt(2026, 11, 6, 10, 16))).run(self.executor)
+        self.assertEqual(decision.action, "idle")
+        self.assertEqual(self.publishes, [])
+        EVIDENCE["backup_idle_no_publish"] = "healthy-primary backup submits nothing and does not publish"
+
+    def test_backup_takeover_publishes_after_slot(self):
+        when = pt(2026, 11, 6, 10, 46)
+        heartbeat = hb(pt(2026, 11, 6, 10, 7))
+        decision = self.runner("backup", when, instance="box-1", heartbeat=heartbeat).run(self.executor)
+        self.assertEqual(decision.action, "run")
+        self.assertEqual(decision.reason, "takeover")
+        self.assertEqual(len(self.publishes), 1)
+        pub = self.publishes[0]
+        self.assertEqual(pub["host"], "box")
+        self.assertEqual(pub["role"], "backup")
+        self.assertTrue(pub["publish_allowed"])
+        self.assertEqual(pub["slot"].kind, "scan")
+        self.assertIsNotNone(pub.get("takeover_since_utc"))
+        EVIDENCE["backup_takeover_publish"] = "box backup publishes only after it holds the lease on a takeover slot"
+
+    def test_publish_exception_does_not_fail_slot(self):
+        self._pub_patch.stop()
+        with patch(
+            "paper_broker.failover.dashboard_publish.schedule_publish",
+            side_effect=RuntimeError("push exploded"),
+        ):
+            when = pt(2026, 11, 9, 6, 30, 30)
+            decision = self.runner("primary", when).run(self.executor)
+        self._pub_patch.start()
+        self.assertEqual(decision.action, "run")
+        self.assertEqual(decision.orders_submitted, 0)
+        self.assertEqual(self.calls, ["2026-11-09 scan 0630"])
+        EVIDENCE["publish_isolated"] = "a raising publish hook does not fail or delay the trading slot"
+
+    def test_schedule_publish_skips_newer_yopc_heartbeat(self):
+        self._pub_patch.stop()
+        from paper_broker.failover.dashboard_publish import schedule_publish, write_local_heartbeat
+        pushed = []
+        since = pt(2026, 11, 6, 10, 46).astimezone(timezone.utc)
+        remote = {"host": "yopc", "ts_utc": pt(2026, 11, 6, 10, 50).astimezone(timezone.utc).isoformat(), "trading": False}
+
+        class HB:
+            error = None
+            host = "yopc"
+            ts_utc = pt(2026, 11, 6, 10, 50).astimezone(timezone.utc)
+            kind = "scan"
+            trading = False
+
+        os.environ["ORB_V4_RUN"] = str(self.root / "pubrun")
+        try:
+            status = schedule_publish(
+                host="box",
+                role="backup",
+                publish_allowed=True,
+                slot=Slot(pt(2026, 11, 6, 10, 45), "scan"),
+                rc=0,
+                takeover_since_utc=since,
+                fetch=lambda: HB(),
+                pusher=lambda: pushed.append("pushed") or "ok",
+            )
+        finally:
+            os.environ.pop("ORB_V4_RUN", None)
+            self._pub_patch.start()
+        self.assertEqual(status, "skipped_newer_remote")
+        self.assertEqual(pushed, [])
+        EVIDENCE["publish_no_overwrite"] = "box does not push over a newer YOPC heartbeat after takeover"
 
     def test_engine_anchor_fixture_preserves_submit_variable(self):
         fixture = (ROOT / "tests" / "fixtures" / "engine_submit_anchors.py").read_text(encoding="utf-8")
