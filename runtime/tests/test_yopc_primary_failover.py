@@ -17,7 +17,8 @@ sys.path.insert(0, str(ROOT))
 
 from paper_broker.failover import close_guard, schedule
 from paper_broker.failover.carry_manifest import load_manifest, overlay_manifest, recovery_coid
-from deploy.apply_hooks import apply_engine_hooks, assert_not_dashboard, recovery_status
+from deploy.apply_hooks import HookApplyError, apply_engine_hooks, assert_not_dashboard, recovery_status
+from deploy.bootstrap_ownership import bootstrap_ownership
 from paper_broker.failover.cli import main as cli_main
 from paper_broker.failover.fence import assert_fence, holds_fence
 from paper_broker.failover.heartbeat_fetch import fetch_heartbeat
@@ -440,16 +441,63 @@ class FailoverTests(unittest.TestCase):
             '        fo = flatten(client, sorted(flat_syms), dry_run=dry_run, log=log)\n'
             '        submitted = client.submit_order(req)\n'
         )
-        patched = apply_engine_hooks(src)
-        self.assertIn("decide_close", patched)
-        self.assertIn("before_submit", patched)
-        with self.assertRaises(Exception):
+        with self.assertRaises(HookApplyError) as mismatched:
+            apply_engine_hooks(src)
+        self.assertIn("submit_order", str(mismatched.exception))
+        with self.assertRaises(HookApplyError):
             apply_engine_hooks("no anchors here")
         rec = self.root / "orb-v4-recovery-close-20261109.py"
         rec.write_text("changed\n", encoding="utf-8")
         self.assertEqual(recovery_status(rec), "mismatch")
         self.assertEqual(rec.read_text(encoding="utf-8"), "changed\n")
         EVIDENCE["publish_venv_hooks"] = "box does not overwrite a newer YOPC liveness heartbeat; symlink venv and dashboard root are refused; recovery bytes are not rewritten"
+
+    def test_engine_anchor_fixture_preserves_submit_variable(self):
+        fixture = (ROOT / "tests" / "fixtures" / "engine_submit_anchors.py").read_text(encoding="utf-8")
+        self.assertIn("o = client.submit_order(req)", fixture)
+        self.assertIn('for r in sorted(due, key=lambda x: x["symbol"]):\n        if r["symbol"] in have_moc:', fixture)
+        self.assertIn("    if flat_syms:\n        fo = flatten(client, sorted(flat_syms), dry_run=dry_run, log=log)", fixture)
+        patched = apply_engine_hooks(fixture)
+        self.assertIn("decide_close", patched)
+        self.assertIn("before_submit()", patched)
+        code_line = "\n        o = client.submit_order(req)\n"
+        self.assertEqual(patched.count(code_line), 1)
+        self.assertNotIn("submitted = client.submit_order(req)", patched)
+        submit_at = patched.index(code_line)
+        self.assertIn("before_submit()", patched[max(0, submit_at - 180):submit_at])
+        self.assertIn('getattr(o, "id", "")', patched)
+        self.assertEqual(patched.count("before_submit()"), 1)
+        self.assertEqual(apply_engine_hooks(patched), patched)
+        broken = fixture.replace("o = client.submit_order(req)", "result = client.submit_order(req)")
+        with self.assertRaises(HookApplyError) as missing:
+            apply_engine_hooks(broken)
+        self.assertIn("submit_order", str(missing.exception))
+        self.assertNotIn("decide_close", broken)
+        EVIDENCE["engine_hooks"] = "fixture submit line o = client.submit_order(req) keeps o; mismatch refuses with no partial edit"
+
+    def test_bootstrap_ownership_is_idempotent(self):
+        bare = self.root / "own.git"
+        subprocess.run(["git", "init", "--bare", "-b", "ownership", str(bare)], check=True, capture_output=True, text=True)
+        first = bootstrap_ownership(str(bare), self.root / "boot-a")
+        self.assertEqual(first, "created")
+        seen = GitBranchTransport(str(bare), self.root / "boot-read").read()
+        self.assertEqual(seen.doc["status"], "released")
+        self.assertEqual(seen.doc["reason"], "bootstrap")
+        self.assertIsNone(seen.doc["token"])
+        created_sha = seen.sha
+        second = bootstrap_ownership(str(bare), self.root / "boot-b")
+        self.assertEqual(second, "exists")
+        again = GitBranchTransport(str(bare), self.root / "boot-read-2").read()
+        self.assertEqual(again.sha, created_sha)
+        holding = dict(seen.doc)
+        holding.update({"status": "holding", "owner": "yopc", "token": "9:yopc:keep", "epoch": 9, "reason": "primary"})
+        wrote = GitBranchTransport(str(bare), self.root / "boot-hold").cas_write(created_sha, holding)
+        self.assertEqual(wrote.status, "ok", wrote.detail)
+        self.assertEqual(bootstrap_ownership(str(bare), self.root / "boot-c"), "exists")
+        final = GitBranchTransport(str(bare), self.root / "boot-final").read()
+        self.assertEqual(final.doc["token"], "9:yopc:keep")
+        self.assertEqual(final.doc["status"], "holding")
+        EVIDENCE["ownership_bootstrap"] = "first call creates a released lease; later calls do not replace it"
 
     def test_git_cas_two_hosts_one_owner(self):
         bare = self.root / "bare.git"

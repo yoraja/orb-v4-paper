@@ -32,10 +32,18 @@ ORB_V4_OWNERSHIP_REMOTE=https://github.com/yoraja/orb-v4-paper.git
 ORB_V4_OWNERSHIP_BRANCH=ownership
 ```
 
-The lease file is `ownership.json` on branch `ownership`. Create that branch
-once from a host that already has the Pages credential. Do not invent a new
-credential, tunnel, or shared folder. Until a fencing token is confirmed on
-that branch, the runner submits nothing.
+The lease file is `ownership.json` on branch `ownership`. From a host that
+already has the Pages git credential (nothing new is written to the command
+line):
+
+```text
+python runtime/deploy/bootstrap_ownership.py --remote https://github.com/yoraja/orb-v4-paper.git
+```
+
+The first run pushes a released bootstrap document. A later run sees
+`ownership.json` and does not replace it, including a lease that is already
+held. Do not invent a credential, tunnel, or shared folder. Until a fencing
+token is confirmed on that branch, the runner submits nothing.
 
 Account pin remains paper `J7D0` at `https://paper-api.alpaca.markets`. Never
 pass `--live` or `--arm`.
@@ -84,9 +92,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\yogjr\.orb-v4-paper
 ```
 
 7. Patch the installed engine only if `runtime/deploy/apply_hooks.py` finds the
-   known anchors. If it reports a mismatch, stop and leave the current roles
-   in place. The hooks add `decide_close` before exit/eod flattening and
-   `before_submit()` immediately before `client.submit_order`.
+   known anchors in `paper_broker/orb_v4_paper.py` (sha256
+   `97c073d4b5a85d6cbcfeeae53a0c283f3b23b803a9cf4d11f4e66b5c04f23fe7` on the
+   probed hosts). Exit and flatten anchors are unchanged. The submit anchor is
+   `o = client.submit_order(req)`. The hook inserts `before_submit()` above
+   that line and does not rename `o`. If any anchor is missing, the patcher
+   raises and leaves the file unchanged.
 8. Carry awareness for both hosts is
    `paper_broker/failover/carry_expected_20261106.json` (AAPL, MSFT, CSCO,
    META, WMT, with MSFT stop 529.53 and target 546.75). It does not submit
@@ -97,11 +108,27 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\yogjr\.orb-v4-paper
 1. Stop the box `orb_v4_timer.py` daemon. Do not stop the LIVE timer.
 2. Disable the YOPC task `ORB v4 PAPER Failover Watchdog` (it still assumes
    box is primary). Do not delete it until the new primary has a confirmed day.
-3. Register, on the host, `ORB v4 PAPER Primary` (YOPC, weekdays 05:55 PT,
-   `orb-v4-role.ps1 -Role Primary`) and `ORB v4 PAPER Backup` (box, weekdays
-   06:01 PT every 5 minutes through 13:25, `-Role Backup`).
-   `register-tasks.ps1` only prints that list unless `-Register` is passed on
-   the host. This package's `-Register` path throws on purpose.
+3. Register one task per host. `register-tasks.ps1` prints the definitions
+   with no changes. `-Register` performs the registration and never touches
+   `ORB v4 PAPER Recovery Close 20261109`.
+
+```powershell
+# YOPC
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\yogjr\.orb-v4-paper\register-tasks.ps1 -Register -Role Primary
+# box
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\yogjr\.orb-v4-paper\register-tasks.ps1 -Register -Role Backup
+```
+
+Equivalent `schtasks` commands, with `C:\Users\yogjr\.orb-v4-paper\orb-v4-role.ps1`
+as the role script:
+
+```text
+schtasks /Create /TN "ORB v4 PAPER Primary" /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 05:55 /RL LIMITED /F /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\Users\yogjr\.orb-v4-paper\orb-v4-role.ps1\" -Role Primary"
+schtasks /Create /TN "ORB v4 PAPER Backup" /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 06:01 /RI 5 /DU 07:25 /RL LIMITED /F /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\Users\yogjr\.orb-v4-paper\orb-v4-role.ps1\" -Role Backup"
+```
+
+If `schtasks` rejects `/RI` on a weekly trigger, use `-Register -Role Backup`
+instead. That path sets a 5-minute repetition for 7 hours 25 minutes.
 4. Leave the Monday recovery task registered and unmodified.
 
 Rollback: disable the two new tasks, start the box PAPER daemon, re-enable the

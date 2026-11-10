@@ -48,12 +48,11 @@ FLATTEN_REPLACEMENT = (
     "    if flat_syms:\n"
     "        fo = flatten(client, sorted(flat_syms), dry_run=dry_run, log=log)"
 )
-SUBMIT_ANCHOR = "        submitted = client.submit_order(req)"
-SUBMIT_REPLACEMENT = (
-    "        from paper_broker.failover.fence import before_submit\n"
-    "        before_submit()\n"
-    "        submitted = client.submit_order(req)"
-)
+# Installed paper_broker/orb_v4_paper.py on both hosts (sha256
+# 97c073d4b5a85d6cbcfeeae53a0c283f3b23b803a9cf4d11f4e66b5c04f23fe7)
+# assigns the broker result to `o`. Downstream code reads `o`, so the hook
+# must not rename it. `submitted = client.submit_order(req)` is not this file.
+SUBMIT_LINE = "o = client.submit_order(req)"
 
 
 class HookApplyError(RuntimeError):
@@ -83,15 +82,54 @@ def recovery_status(path: Path) -> str:
     return "match"
 
 
+def _submit_lines_guarded(source: str) -> bool:
+    lines = source.splitlines()
+    found = False
+    for index, line in enumerate(lines):
+        if line.strip() != SUBMIT_LINE:
+            continue
+        found = True
+        previous = [lines[pos].strip() for pos in range(max(0, index - 3), index)]
+        if "before_submit()" not in previous:
+            return False
+    return found
+
+
+def _insert_before_submit(source: str) -> str:
+    """Insert before_submit() above each `o = client.submit_order(req)` and keep `o`."""
+    lines = source.splitlines(keepends=True)
+    found = 0
+    out: list[str] = []
+    for line in lines:
+        if line.strip() != SUBMIT_LINE:
+            out.append(line)
+            continue
+        indent = line[:len(line) - len(line.lstrip(" "))]
+        previous = [item.strip() for item in out[-3:]]
+        if "before_submit()" not in previous:
+            out.append(f"{indent}from paper_broker.failover.fence import before_submit\n")
+            out.append(f"{indent}before_submit()\n")
+        if not line.endswith("\n"):
+            line += "\n"
+        out.append(line)
+        found += 1
+    if found == 0:
+        raise HookApplyError(
+            "installed PAPER engine does not match the known anchors (submit_order). "
+            "Refusing to patch. Leave the current roles in place."
+        )
+    return "".join(out)
+
+
 def apply_engine_hooks(source: str) -> str:
-    if "decide_close" in source and "before_submit" in source:
+    if "decide_close" in source and _submit_lines_guarded(source):
         return source
     missing = []
     if EXIT_ANCHOR not in source:
         missing.append("cmd_exit loop")
     if FLATTEN_ANCHOR not in source:
         missing.append("cmd_eod flatten")
-    if SUBMIT_ANCHOR not in source:
+    if SUBMIT_LINE not in source:
         missing.append("submit_order")
     if missing:
         raise HookApplyError(
@@ -101,5 +139,4 @@ def apply_engine_hooks(source: str) -> str:
         )
     out = source.replace(EXIT_ANCHOR, EXIT_REPLACEMENT, 1)
     out = out.replace(FLATTEN_ANCHOR, FLATTEN_REPLACEMENT, 1)
-    out = out.replace(SUBMIT_ANCHOR, SUBMIT_REPLACEMENT)
-    return out
+    return _insert_before_submit(out)
