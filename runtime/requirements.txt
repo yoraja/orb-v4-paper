@@ -1,0 +1,2 @@
+# The failover overlay uses the Python 3.11+ standard library only.
+# Install the existing PAPER freeze into venv-paper, never into a symlinked .venv.
