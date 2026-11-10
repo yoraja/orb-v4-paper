@@ -134,6 +134,19 @@ instead. That path sets a 5-minute repetition for 7 hours 25 minutes.
 Rollback: disable the two new tasks, start the box PAPER daemon, re-enable the
 old YOPC watchdog. The `ownership` branch can stay; idle processes do not order.
 
+
+## 13:05 verify and alerts (2026-11-10)
+
+Windows rejected the 13:05 EOD line `{today:%a %b %-d}` (`ValueError: Invalid format string`).
+The installed engine on both hosts now uses `paper_broker.ptime` (no hyphen-padding flags).
+Copy `runtime/paper_broker/ptime.py` and `runtime/paper_broker/slack_alerts.py` into the
+host `paper_broker` package, and `runtime/daily/docs/ops_orb_v4_paper.json` into `daily/docs`.
+`orb-v4-role.ps1` now sets `ORB_V4_PAPER_KEYS_FILE` to the v4-only `paper-secrets.json` when
+that env var is unset, which the primary task needs on YOPC.
+
+Direct `#grok-trades` posts stay **disabled** (`slack_alerts_enabled: false`). No webhook is
+required until Yogesh enables the hook. The hook never reads LIVE Slack credentials.
+
 ## Untested on Windows
 
 The suite runs on Linux with a local git bare repo and fake brokers. These host

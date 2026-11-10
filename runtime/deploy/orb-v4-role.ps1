@@ -19,6 +19,8 @@ $Base = if ($env:ORB_V4_BASE) { $env:ORB_V4_BASE } else { 'C:\Users\yogjr\.orb-v
 $Py = Join-Path $Base 'venv-paper\Scripts\python.exe'
 if (-not (Test-Path $Py)) { throw "PAPER venv-paper python missing ($Py). Do not use a symlinked .venv." }
 $env:ORB_BROKER_MODE = 'paper'
+$Secrets = Join-Path $Base 'paper-secrets.json'
+if (-not $env:ORB_V4_PAPER_KEYS_FILE) { $env:ORB_V4_PAPER_KEYS_FILE = $Secrets }
 $env:ORB_V4_ENGINE_ALLOW = '1'
 if ($Role -eq 'Backup') { $env:ORB_V4_ALLOW_HEARTBEAT_FETCH = '1' }
 $env:ORB_V4_HOME = Join-Path $Base 'code'

@@ -399,6 +399,14 @@ class Runner:
         except Exception:
             return None
 
+    def _problem_alert(self, kind: str, text: str, *, dry_run: bool = False) -> None:
+        """Best-effort problem notice for a takeover or handback. Never raises."""
+        try:
+            from paper_broker.slack_alerts import maybe_alert
+            maybe_alert("failover", text, key=kind, dry_run=dry_run)
+        except Exception:
+            pass
+
     def _write_takeover(self, missed: int) -> None:
         hb = _aware(self.heartbeat.ts_utc).isoformat() if self.heartbeat and self.heartbeat.ts_utc else None
         self._takeover_path().write_text(json.dumps({
@@ -456,6 +464,11 @@ class Runner:
             return base
         if why == "takeover" and not self._takeover_path().exists():
             self._write_takeover(base.missed)
+            self._problem_alert(
+                "takeover",
+                f"ORB v4 PAPER 🚨 box backup takeover — {self.host} acquired the lease after the primary missed {base.missed} slot(s).",
+                dry_run=dry_run,
+            )
         base.action = "run"
         base.reason = why
         base.slots = due
@@ -494,6 +507,11 @@ class Runner:
         path = self._takeover_path()
         if path.exists():
             path.unlink()
+        self._problem_alert(
+            "handback",
+            f"ORB v4 PAPER ℹ️ failover handback — {self.host} released the lease; primary heartbeat is newer.",
+            dry_run=dry_run,
+        )
         base.action = "handback"
         base.reason = "primary_heartbeat_newer"
         base.fence_confirmed = False
