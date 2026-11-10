@@ -144,8 +144,18 @@ host `paper_broker` package, and `runtime/daily/docs/ops_orb_v4_paper.json` into
 `orb-v4-role.ps1` now sets `ORB_V4_PAPER_KEYS_FILE` to the v4-only `paper-secrets.json` when
 that env var is unset, which the primary task needs on YOPC.
 
-Direct `#grok-trades` posts stay **disabled** (`slack_alerts_enabled: false`). No webhook is
-required until Yogesh enables the hook. The hook never reads LIVE Slack credentials.
+Direct `#grok-trades` posts stay **disabled** (`slack_alerts_enabled: false`). The hook never
+reads LIVE Slack credentials and never logs the webhook URL.
+
+When later enabled, the webhook is read from the shared file
+`C:\Users\yogjr\.grok-alerts\slack-alerts.json`
+(`{"channel":"C0C0HCTTJBU","webhook_url":"..."}`). Override the path with
+`ORB_V4_SLACK_ALERTS_FILE`. If the file's `channel` is not `C0C0HCTTJBU`, or the
+file is unreadable, the hook refuses to post and does not fall back to env.
+The box does not have that file. For backup alerts, either mirror the file onto
+the box and set `ORB_V4_SLACK_ALERTS_FILE` to that path, or set the box-side
+env var `ORB_V4_SLACK_WEBHOOK_URL` (used only when the file is absent). Do not
+paste the webhook in chat.
 
 ## Untested on Windows
 

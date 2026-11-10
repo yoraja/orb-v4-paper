@@ -1,9 +1,16 @@
 """Direct #grok-trades alerts for ORB v4 PAPER jobs (YOPC primary or box backup).
 
 Disabled by default: daily/docs/ops_orb_v4_paper.json slack_alerts_enabled=false.
-This module never posts unless that flag is true AND a v4-owned webhook is set
-in ORB_V4_SLACK_WEBHOOK_URL. It never reads LIVE ORB v3 Slack credentials,
-never prints or logs the webhook value, and never posts heartbeats or routine fills.
+This module never posts unless that flag is true AND a v4-owned webhook is
+available. Webhook resolution, in order:
+  1. JSON file at ORB_V4_SLACK_ALERTS_FILE, or by default
+     C:\\Users\\yogjr\\.grok-alerts\\slack-alerts.json, of the form
+     {"channel":"C0C0HCTTJBU","webhook_url":"..."}. The file is refused (no
+     post, no env fallback) if channel is not C0C0HCTTJBU or the file is
+     unreadable.
+  2. Else env ORB_V4_SLACK_WEBHOOK_URL (box backup, if the file is not mirrored).
+It never reads LIVE ORB v3 Slack credentials, never prints or logs the webhook
+value, and never posts heartbeats or routine fills.
 
 Events (deduped once per event[+key] per PT day):
   halt, auth, failed_flatten, failed_verify, failover, unfilled_exit
@@ -25,6 +32,8 @@ PT = ZoneInfo("America/Los_Angeles")
 PREFIX = P.SLACK_PREFIX
 CHANNEL = P.SLACK_CHANNEL
 WEBHOOK_ENV = "ORB_V4_SLACK_WEBHOOK_URL"
+ALERTS_FILE_ENV = "ORB_V4_SLACK_ALERTS_FILE"
+DEFAULT_ALERTS_FILE = Path(r"C:\Users\yogjr\.grok-alerts\slack-alerts.json")
 OPS_NAME = "ops_orb_v4_paper.json"
 ALLOWED = frozenset({
     "halt",
@@ -66,9 +75,38 @@ def alerts_enabled() -> bool:
     return bool(val)
 
 
-def _webhook_url() -> str:
-    """Return the v4 webhook or ''. Never log or return a LIVE/shared name's value."""
-    return (os.environ.get(WEBHOOK_ENV) or "").strip()
+def alerts_file_path() -> Path:
+    override = (os.environ.get(ALERTS_FILE_ENV) or "").strip()
+    if override:
+        return Path(override)
+    return DEFAULT_ALERTS_FILE
+
+
+def _resolve_webhook() -> tuple[str, str]:
+    """Return (url_or_empty, reason). Never logs or includes the URL in reason."""
+    try:
+        path = alerts_file_path()
+        exists = path.is_file()
+    except Exception:
+        return "", "alerts_file_unreadable"
+    if exists:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            return "", "alerts_file_unreadable"
+        if not isinstance(data, dict):
+            return "", "alerts_file_unreadable"
+        channel = str(data.get("channel") or "").strip()
+        if channel != CHANNEL:
+            return "", "wrong_channel"
+        url = str(data.get("webhook_url") or "").strip()
+        if url:
+            return url, "ok"
+        return "", "missing_webhook"
+    url = (os.environ.get(WEBHOOK_ENV) or "").strip()
+    if url:
+        return url, "ok"
+    return "", "missing_webhook"
 
 
 def _today() -> str:
@@ -174,9 +212,9 @@ def maybe_alert(
             out["reason"] = "deduped"
             out["deduped"] = True
             return out
-        url = _webhook_url()
+        url, why = _resolve_webhook()
         if not url:
-            out["reason"] = "missing_webhook"
+            out["reason"] = why or "missing_webhook"
             return out
         body = _prefix(text)
         if opener is not None:

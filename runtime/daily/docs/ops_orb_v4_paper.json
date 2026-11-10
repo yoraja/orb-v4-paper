@@ -10,5 +10,8 @@
     "failed_verify",
     "failover",
     "unfilled_exit"
-  ]
+  ],
+  "webhook_file_env": "ORB_V4_SLACK_ALERTS_FILE",
+  "webhook_file_default": "C:\\Users\\yogjr\\.grok-alerts\\slack-alerts.json",
+  "webhook_file_channel": "C0C0HCTTJBU"
 }
