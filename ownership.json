@@ -1,7 +1,9 @@
 {
  "account_pin_last4": "J7D0",
  "acquired_utc": "2026-11-11T16:36:32.965112+00:00",
- "completed": [],
+ "completed": [
+  "2026-11-11 scan 0830"
+ ],
  "date": "2026-11-11",
  "epoch": 1,
  "expires_utc": "2026-11-11T16:48:32.965112+00:00",
