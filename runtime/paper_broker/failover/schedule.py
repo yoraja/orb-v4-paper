@@ -161,8 +161,15 @@ def is_successful(state: Path, slot: Slot) -> bool:
 
 
 def heartbeat_covers_slot(hb: dict | None, slot: Slot) -> bool:
-    """A failed, non-trading, or different-slot heartbeat does not mark this slot successful."""
+    """A failed, non-trading, or different-slot heartbeat does not mark this slot successful.
+
+    Only a YOPC primary tick can cover a slot. A box or kind=alive heartbeat never does.
+    """
     if not hb or hb.get("error"):
+        return False
+    if hb.get("host") and str(hb.get("host")) != PRIMARY_HOST:
+        return False
+    if str(hb.get("kind") or "") not in ("scan", "exit", "eod", "verify"):
         return False
     if hb.get("trading") is False or hb.get("ok") is not True:
         return False
@@ -177,10 +184,21 @@ def heartbeat_covers_slot(hb: dict | None, slot: Slot) -> bool:
 
 
 def missed_slots(slots: list[Slot], now: datetime, hb_pt: datetime | None, grace_min: int = GRACE_MIN) -> list[Slot]:
-    if hb_pt is None:
-        return []
+    """Slots that are past grace and have no primary-liveness heartbeat after they fired.
+
+    If there is no usable YOPC primary heartbeat (hb_pt is None), every slot
+    past grace is missed. A box or kind=alive timestamp must not be passed in
+    as hb_pt — that is what kept the backup idle on 2026-11-12.
+    """
     cutoff = now - timedelta(minutes=grace_min)
-    return [s for s in slots if s.kind != "postclose" and s.when <= cutoff and s.when > hb_pt]
+    out = []
+    for s in slots:
+        if s.kind == "postclose" or s.when > cutoff:
+            continue
+        if hb_pt is not None and s.when <= hb_pt:
+            continue
+        out.append(s)
+    return out
 
 
 def lease_view(expires_utc: datetime | None, now_utc: datetime, skew_s: int = SKEW_S) -> str:

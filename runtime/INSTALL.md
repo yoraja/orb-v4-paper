@@ -206,3 +206,15 @@ Mid-tick lease renewal is unnecessary: the 8-minute cap is shorter than every
 lease TTL (scan 12 min, exit/eod 16 min, verify 10 min). The runner already
 renews the lease at the start of each tick; the next tick renews again after
 a timeout.
+
+## Primary liveness is YOPC slot ticks only
+
+The public `heartbeat.json` is not host-scoped by itself. Only a heartbeat
+with `host=yopc` and `kind` in `scan` / `exit` / `eod` / `verify` counts as
+primary liveness for backup takeover. A box `kind=alive` publish (for
+example a recovery flatten that refreshed the dashboard) must not reset
+the missed-slot counter. If there is no usable YOPC tick, every session
+slot past the 8-minute grace is missed.
+
+The 20-second lease expiry skew is for takeover only. The current holder
+may idle or renew in that window instead of `lease_expiry_ambiguous`.

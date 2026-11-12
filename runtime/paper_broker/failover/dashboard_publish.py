@@ -165,6 +165,12 @@ def schedule_publish(
         if role == "backup" and not publish_allowed:
             return "skipped_not_allowed"
         kind, hhmm, date = _slot_fields(slot)
+        # Only real slot ticks may become the public liveness heartbeat.
+        # The 2026-11-12 06:31 recovery flatten published kind=alive from the
+        # box and the backup treated it as a healthy primary at 06:35 PT.
+        if kind not in KIND_OK:
+            _append_log(f"publish skipped: kind={kind!r} is not a slot tick")
+            return "skipped_not_a_slot"
         local = build_heartbeat(host, kind=kind, slot=hhmm, date=date, rc=rc)
         write_local_heartbeat(local)
         remote = _remote_heartbeat(fetch=fetch)

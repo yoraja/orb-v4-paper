@@ -98,6 +98,18 @@ class Heartbeat:
             return None
         return _aware(self.ts_utc).astimezone(PT)
 
+    def is_primary_tick(self) -> bool:
+        """True only for a real YOPC primary slot tick (scan/exit/eod/verify).
+
+        A box dashboard or recovery-flatten kind=alive write must not count
+        as primary liveness. Missing ts or host also does not count.
+        """
+        if self.error or self.ts_utc is None:
+            return False
+        if (self.host or "") != PRIMARY_HOST:
+            return False
+        return (self.kind or "") in ("scan", "exit", "eod", "verify")
+
 
 @dataclass
 class AccountContext:
@@ -210,10 +222,12 @@ class Runner:
         missed = self._missed()
         base.missed = len(missed)
         base.daemon_dead = bool(self.heartbeat and not self.heartbeat.error and len(missed) >= MISSED_SLOTS)
-        if view == "ambiguous":
+        if view == "ambiguous" and not self._same_holder(doc):
+            # Clock skew around expiry: a non-holder must not take over.
+            # The holder is treated as still holding (see _we_hold).
             base.reason = "lease_expiry_ambiguous"
             return base
-        if view == "held" and not self._we_hold(doc):
+        if view in ("held", "ambiguous") and not self._we_hold(doc):
             base.action = "idle"
             base.reason = "lease_held_elsewhere"
             return base
@@ -279,18 +293,23 @@ class Runner:
         except Exception:
             pass
 
-    def _we_hold(self, doc: dict | None) -> bool:
+    def _same_holder(self, doc: dict | None) -> bool:
         return bool(
             doc
             and doc.get("status") == "holding"
             and doc.get("owner") == self.host
             and doc.get("instance") == self.instance
-            and self._view(doc) == "held"
         )
+
+    def _we_hold(self, doc: dict | None) -> bool:
+        # The 20s expiry skew is for takeover, not for the holder: an owner
+        # still in that window may idle or renew instead of fail-closed
+        # (2026-11-12 13:15 PT lease_expiry_ambiguous on the box).
+        return bool(self._same_holder(doc) and self._view(doc) in ("held", "ambiguous"))
 
     def _stale(self) -> bool:
         hb = self.heartbeat
-        if hb is None or hb.error or hb.ts_utc is None:
+        if hb is None or not hb.is_primary_tick():
             return True
         age = (_utcnow(self.now) - _aware(hb.ts_utc)).total_seconds()
         return age > GRACE_MIN * 60
@@ -386,7 +405,8 @@ class Runner:
         return set(doc.get("completed") or [])
 
     def _missed(self) -> list[Slot]:
-        hb_pt = self.heartbeat.ts_pt if self.heartbeat else None
+        hb = self.heartbeat
+        hb_pt = hb.ts_pt if hb is not None and hb.is_primary_tick() else None
         return missed_slots(self.slots, self.now, hb_pt, GRACE_MIN)
 
     def _view(self, doc: dict | None) -> str:
@@ -396,7 +416,7 @@ class Runner:
 
     def _primary_returned(self, doc: dict) -> bool:
         hb = self.heartbeat
-        if hb is None or hb.error or hb.ts_utc is None or hb.host != PRIMARY_HOST:
+        if hb is None or not hb.is_primary_tick():
             return False
         hb_ts = _aware(hb.ts_utc)
         since = self._takeover_since()

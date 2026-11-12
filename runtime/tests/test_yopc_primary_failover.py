@@ -263,7 +263,12 @@ class FailoverTests(unittest.TestCase):
         first = backup.run(self.executor)
         self.assertEqual(first.orders_submitted, 1)
         later = pt(2026, 11, 6, 10, 52)
-        returned = hb(later, kind="alive", slot=None, trading=False, ok=True)
+        # A YOPC kind=alive dashboard write is not a primary tick and must not
+        # trigger handback (same rule as backup liveness).
+        alive_only = hb(later, kind="alive", slot=None, trading=False, ok=True)
+        still = self.runner("backup", later, instance="box-1", heartbeat=alive_only, state=self.root / "backup").plan(dry_run=True)
+        self.assertNotEqual(still.action, "handback")
+        returned = hb(later, kind="scan", slot="1045", trading=True, ok=True)
         hand = self.runner("backup", later, instance="box-1", heartbeat=returned, state=self.root / "backup").run(self.executor)
         self.assertEqual(hand.action, "handback")
         self.assertEqual(hand.orders_submitted, 0)
@@ -512,6 +517,17 @@ class FailoverTests(unittest.TestCase):
         self.assertEqual(self.calls, ["2026-11-09 scan 0630"])
         EVIDENCE["publish_isolated"] = "a raising publish hook does not fail or delay the trading slot"
 
+    def test_schedule_publish_skips_kind_alive(self):
+        self._pub_patch.stop()
+        from paper_broker.failover import dashboard_publish as dp
+        calls = []
+        got = dp.schedule_publish(
+            host="box", role="backup", publish_allowed=True, slot=None, rc=0,
+            pusher=lambda *a, **k: calls.append(1) or 0,
+        )
+        self.assertEqual(got, "skipped_not_a_slot")
+        self.assertEqual(calls, [])
+
     def test_schedule_publish_skips_newer_yopc_heartbeat(self):
         self._pub_patch.stop()
         from paper_broker.failover.dashboard_publish import schedule_publish, write_local_heartbeat
@@ -685,15 +701,92 @@ class FailoverTests(unittest.TestCase):
         self.assertIn("$TIMER ensure", installer)
         self.assertNotIn("box-secrets.json", text)
 
+
+    def test_box_alive_heartbeat_is_not_primary_liveness(self):
+        """2026-11-12: flatten published kind=alive host=box at 06:35 and the
+        backup reset missed=0, staying idle until 07:52."""
+        from paper_broker.failover.runner import Heartbeat
+        from paper_broker.failover.schedule import missed_slots, regular_grid
+
+        flatten_hb = Heartbeat(
+            host="box", kind="alive", slot=None, date=None, rc=0,
+            ts_utc=pt(2026, 11, 12, 6, 35, 30).astimezone(timezone.utc),
+        )
+        self.assertFalse(flatten_hb.is_primary_tick())
+        now = pt(2026, 11, 12, 6, 51)
+        # No usable YOPC tick: 06:00 and 06:15 are past grace; 06:30/06:45 are not.
+        missed = missed_slots(regular_grid(now.date()), now, None, 8)
+        self.assertEqual([f"{s.hhmm}" for s in missed if s.kind == "scan"], ["0600", "0615", "0630"])
+        # Passing the box timestamp in would have wrongly cleared 06:00-06:30.
+        wrongly = missed_slots(regular_grid(now.date()), now, flatten_hb.ts_pt, 8)
+        self.assertLess(len(wrongly), len(missed))
+
+        decision = self.runner("backup", now, heartbeat=flatten_hb).plan(dry_run=True)
+        self.assertGreaterEqual(decision.missed, 2)
+        self.assertTrue(decision.daemon_dead)
+        self.assertEqual(decision.action, "would_run")
+        self.assertEqual(decision.reason, "takeover")
+        self.assertTrue(any(s.kind == "scan" and s.hhmm == "0645" for s in decision.slots))
+        self.assertEqual(self.transport.writes, 0)
+
+    def test_holder_does_not_fail_closed_in_expiry_skew(self):
+        when = pt(2026, 11, 12, 13, 15, 0)
+        self.transport.doc = {
+            "status": "holding", "owner": "box", "instance": "box-1", "epoch": 3,
+            "token": "3:box:box-1", "date": "2026-11-12",
+            "expires_utc": (when + timedelta(seconds=1)).astimezone(timezone.utc).isoformat(),
+            "completed": ["2026-11-12 exit 1246", "2026-11-12 eod 1255", "2026-11-12 verify 1305"],
+        }
+        self.transport.sha = "edge-box"
+        # Backup instance box-1 is the holder; expiry is 1s away (inside 20s skew).
+        # A backup plan still needs a readable heartbeat object; a stale YOPC
+        # verify tick is fine because close slots are already completed.
+        decision = self.runner(
+            "backup", when, instance="box-1",
+            heartbeat=hb(pt(2026, 11, 11, 13, 5), kind="verify"),
+        ).plan()
+        self.assertNotEqual(decision.reason, "lease_expiry_ambiguous")
+        self.assertEqual(decision.action, "idle")
+        self.assertEqual(decision.reason, "takeover_nothing_due")
+
+    def test_friday_primary_acquires_expired_box_lease_at_0600(self):
+        when = pt(2026, 11, 13, 6, 0, 20)
+        self.transport.doc = {
+            "status": "holding", "owner": "box", "instance": "box-cli", "epoch": 3,
+            "token": "3:box:box-cli", "date": "2026-11-12",
+            "expires_utc": "2026-11-12T21:15:00.000308+00:00",
+            "completed": ["2026-11-12 exit 1246", "2026-11-12 eod 1255", "2026-11-12 verify 1305"],
+        }
+        self.transport.sha = "expired-thu"
+        decision = self.runner("primary", when).plan(dry_run=True)
+        self.assertEqual(decision.action, "would_run")
+        self.assertEqual(decision.reason, "primary")
+        self.assertTrue(any(s.kind == "scan" and s.hhmm == "0600" for s in decision.slots))
+        self.assertEqual(self.transport.writes, 0)
+
+    def test_friday_0555_primary_idles_until_first_slot(self):
+        when = pt(2026, 11, 13, 5, 55, 0)
+        self.transport.doc = {
+            "status": "holding", "owner": "box", "instance": "box-cli", "epoch": 3,
+            "token": "3:box:box-cli", "date": "2026-11-12",
+            "expires_utc": "2026-11-12T21:15:00.000308+00:00",
+        }
+        self.transport.sha = "expired-thu"
+        decision = self.runner("primary", when).plan(dry_run=True)
+        self.assertEqual(decision.action, "idle")
+        self.assertEqual(decision.reason, "nothing_due")
+        self.assertEqual(self.transport.writes, 0)
+
     def test_backup_timer_and_role_have_tick_timeout_and_close_wakeups(self):
         text = (ROOT / "paper_broker" / "scripts" / "orb_v4_backup_timer.sh").read_text(encoding="utf-8")
         self.assertIn("run_tick", text)
         self.assertIn("tick_budget", text)
         self.assertIn("--watch", text)
         self.assertIn("--release-locks", text)
-        self.assertIn("(12, 46)", text)
-        self.assertIn("(12, 55)", text)
-        self.assertIn("(13, 5)", text)
+        self.assertTrue("(12, 46)" in text or "12:46:00" in text)
+        self.assertTrue("(12, 55)" in text or "12:55:00" in text)
+        self.assertTrue("(13, 5)" in text or "13:05:00" in text)
+        self.assertIn("300", text)
         role = (ROOT / "deploy" / "orb-v4-role.ps1").read_text(encoding="utf-8")
         self.assertIn("PYTHONPATH", role)
         self.assertIn("Set-Location", role)

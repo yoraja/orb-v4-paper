@@ -27,25 +27,25 @@ raise SystemExit(0 if ok else 1)
 PY
 }
 next_sleep(){
-  python3 - <<'NEXTSLEEP'
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
-now=datetime.now(ZoneInfo('America/Los_Angeles'))
-# Next 5-minute boundary, and also wake at close slots so a just-killed
-# scan cannot push exit/eod/verify to the following 5-minute tick.
-cands=[]
-minute = (now.minute // 5 + 1) * 5
-delta = timedelta(minutes=minute-now.minute, seconds=-now.second, microseconds=-now.microsecond)
-if minute >= 60:
-    delta = timedelta(hours=1, minutes=-now.minute, seconds=-now.second, microseconds=-now.microsecond)
-cands.append(now + delta)
-for hh, mm in ((12, 46), (12, 55), (13, 5)):
-    t = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-    if t > now:
-        cands.append(t)
-secs=max(5, int((min(cands)-now).total_seconds()))
-print(secs)
-NEXTSLEEP
+  # Bash-only wake calculation. A hung python3 here skipped ticks for 17 and
+  # 61 minutes on 2026-11-12 after the 06:20 and 06:51 idles. Cap at 5 minutes.
+  local now_s min sec mins_to target close ts d
+  now_s=$(date +%s)
+  min=$((10#$(date +%M)))
+  sec=$((10#$(date +%S)))
+  mins_to=$((5 - (min % 5)))
+  if [ "$mins_to" -le 0 ]; then mins_to=5; fi
+  target=$((now_s + mins_to * 60 - sec))
+  for close in "12:46:00" "12:55:00" "13:05:00"; do
+    ts=$(date -d "today $close" +%s 2>/dev/null || true)
+    if [ -n "${ts:-}" ] && [ "$ts" -gt "$now_s" ] && [ "$ts" -lt "$target" ]; then
+      target=$ts
+    fi
+  done
+  d=$((target - now_s))
+  if [ "$d" -lt 5 ]; then d=5; fi
+  if [ "$d" -gt 300 ]; then d=300; fi
+  printf '%s\n' "$d"
 }
 run_tick(){
   # Hard wall-clock budget (8 min, or sooner if a close slot is imminent).
@@ -90,9 +90,9 @@ case "${1:-status}" in
     while [ ! -f "$STOPF" ]; do
       if in_window; then
         run_tick
-        python3 -c "import json,time; from pathlib import Path; Path('$HB').write_text(json.dumps({'alive_epoch':int(time.time()),'alive_pt':__import__('datetime').datetime.now(__import__('zoneinfo').ZoneInfo('America/Los_Angeles')).isoformat(),'role':'backup'}))"
+        timeout 5s python3 -c "import json,time; from pathlib import Path; Path('$HB').write_text(json.dumps({'alive_epoch':int(time.time()),'alive_pt':__import__('datetime').datetime.now(__import__('zoneinfo').ZoneInfo('America/Los_Angeles')).isoformat(),'role':'backup'}))" || log "heartbeat write skipped or timed out"
       fi
-      sleep "$(next_sleep)"
+      secs=$(next_sleep || true); case "$secs" in ''|*[!0-9]*) secs=30 ;; esac; if [ "$secs" -gt 300 ]; then secs=300; fi; sleep "$secs"
     done
     rm -f "$PIDF"
     log "supervisor exit"
