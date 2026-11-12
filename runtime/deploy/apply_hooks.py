@@ -140,3 +140,29 @@ def apply_engine_hooks(source: str) -> str:
     out = source.replace(EXIT_ANCHOR, EXIT_REPLACEMENT, 1)
     out = out.replace(FLATTEN_ANCHOR, FLATTEN_REPLACEMENT, 1)
     return _insert_before_submit(out)
+
+
+TIMEOUT_MARKER = "install_runtime_timeouts()"
+TIMEOUT_BLOCK = (
+    "try:\n"
+    "    from paper_broker.failover.http_timeouts import install_runtime_timeouts\n"
+    "    install_runtime_timeouts()\n"
+    "except Exception:\n"
+    "    pass\n"
+)
+TIMEOUT_ANCHOR = "import paper_broker.run_orb_v3_paper as eng"
+
+
+def apply_timeout_install(source: str) -> str:
+    """Idempotent: ensure the installed engine installs HTTP timeouts at import.
+
+    Does not change entry, exit, sizing, or risk logic.
+    """
+    if TIMEOUT_MARKER in source:
+        return source
+    if TIMEOUT_ANCHOR not in source:
+        raise HookApplyError(
+            "installed PAPER engine does not match the known anchors "
+            "(run_orb_v3_paper import). Refusing to patch. Leave the current roles in place."
+        )
+    return source.replace(TIMEOUT_ANCHOR, TIMEOUT_ANCHOR + "\n" + TIMEOUT_BLOCK, 1)

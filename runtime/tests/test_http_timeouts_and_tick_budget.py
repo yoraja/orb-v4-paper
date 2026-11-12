@@ -197,5 +197,16 @@ class InstallTimeoutTests(unittest.TestCase):
         self.assertEqual(captured.get("timeout"), TIMEOUT)
 
 
+
+class TimeoutHookTests(unittest.TestCase):
+    def test_timeout_install_hook_is_idempotent(self):
+        from deploy.apply_hooks import apply_timeout_install
+        src = "import paper_broker.run_orb_v3_paper as eng\n\nX = 1\n"
+        once = apply_timeout_install(src)
+        self.assertIn("install_runtime_timeouts()", once)
+        self.assertEqual(once.count("install_runtime_timeouts()"), 1)
+        twice = apply_timeout_install(once)
+        self.assertEqual(twice, once)
+
 if __name__ == "__main__":
     raise SystemExit(0 if unittest.main(verbosity=2) is None else 0)
