@@ -110,10 +110,29 @@ def cmd_plan(args) -> int:
         decision = runner.plan(dry_run=True)
     else:
         decision = runner.run(_engine_executor, dry_run=False)
+        _join_publishes()
     print(json.dumps(_decision_payload(decision), indent=1))
     if decision.action == "fail_closed" and decision.reason in ("ownership_prerequisite", "lease_unreadable", "heartbeat_unreadable", "ambiguous_timeout", "lease_expiry_ambiguous"):
         return 2
     return 0
+
+
+PUBLISH_JOIN_MAX_S = 180
+
+
+def _join_publishes() -> None:
+    """Let the slot's Pages/heartbeat push finish before this one-shot process exits.
+
+    Bounded by the tick budget so a slow push cannot hold a close slot; the
+    role wrapper's own wall-clock cap still applies on top.
+    """
+    try:
+        from paper_broker.failover.dashboard_publish import join_pending
+        from paper_broker.failover.tick_budget import tick_timeout_seconds
+        budget = min(PUBLISH_JOIN_MAX_S, tick_timeout_seconds(_now(None, False)) - 5)
+        join_pending(max(0, budget))
+    except Exception:
+        pass
 
 
 def _unreadable_heartbeat():

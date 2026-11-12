@@ -64,20 +64,69 @@ function Get-V4TickBudgetSeconds {
   return $budget
 }
 
+function Add-TickOutput([string]$path, [string]$label) {
+  # Python stdout/stderr (the plan/run decision JSON) go to a per-day log so a
+  # scheduled tick leaves evidence. Never contains key values.
+  try {
+    if (Test-Path -LiteralPath $path) {
+      $dir = Join-Path $Base 'logs'
+      $day = Join-Path $dir ("tick-$Role-" + (Get-Date -Format 'yyyyMMdd') + '.log')
+      $body = Get-Content -LiteralPath $path -Raw -ErrorAction SilentlyContinue
+      if ($body) {
+        Add-Content -LiteralPath $day -Value ("==== $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') PT $label $(Split-Path -Leaf $path)") -Encoding UTF8
+        Add-Content -LiteralPath $day -Value $body -Encoding UTF8
+      }
+      Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
+  } catch {}
+}
+
+function Wait-V4ScanFire {
+  # 2026-11-12: the 1-minute repetition starts the tick at :00/:15/:30/:45 +0s,
+  # 20 s before the scan's fire time, so the tick found nothing due and the scan
+  # ran a minute late on the next tick. Wait for +21 s so it fires like LIVE.
+  $n = Get-Date
+  # 12:45 is left as before: its scan is past the entry cutoff and shares the 12:46 exit tick.
+  $inGrid = ($n.Hour -ge 6) -and (($n.Hour -lt 12) -or ($n.Hour -eq 12 -and $n.Minute -le 30))
+  if ($inGrid -and ($n.Minute % 15 -eq 0) -and ($n.Second -lt 21)) {
+    $ms = [int]((21 - $n.Second) * 1000 - $n.Millisecond)
+    if ($ms -gt 0) {
+      Write-RoleLog "waiting ${ms}ms for scan fire time (+20s)"
+      Start-Sleep -Milliseconds $ms
+    }
+  }
+}
+
 function Invoke-V4Tick([string[]]$PyArgs, [string]$label) {
   $budget = Get-V4TickBudgetSeconds
   Write-RoleLog "start $label budget_s=$budget cwd=$(Get-Location) py=$Py home=$($env:ORB_V4_HOME)"
-  $p = Start-Process -FilePath $Py -ArgumentList $PyArgs -WorkingDirectory $env:ORB_V4_HOME -PassThru -NoNewWindow
+  $tmpDir = Join-Path $Base 'logs\tick-tmp'
+  if (-not (Test-Path -LiteralPath $tmpDir)) { New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null }
+  $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss') + "-$PID"
+  $outF = Join-Path $tmpDir "$label-$stamp.out"
+  $errF = Join-Path $tmpDir "$label-$stamp.err"
+  $p = Start-Process -FilePath $Py -ArgumentList $PyArgs -WorkingDirectory $env:ORB_V4_HOME -PassThru -NoNewWindow `
+    -RedirectStandardOutput $outF -RedirectStandardError $errF
+  # Cache the handle now. Without it PowerShell 5.1 reports ExitCode as null
+  # after WaitForExit, so every tick logged 'exit=' and the task result was 0.
+  $null = $p.Handle
   if (-not $p.WaitForExit($budget * 1000)) {
     Write-RoleLog "tick timeout after ${budget}s - killing pid=$($p.Id) and children"
     try { & taskkill /PID $p.Id /T /F | Out-Null } catch {
       try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch {}
     }
     try { & $Py -m paper_broker.failover.tick_budget --release-locks | Out-Null } catch {}
+    Start-Sleep -Milliseconds 500
+    Add-TickOutput $outF $label
+    Add-TickOutput $errF "$label stderr"
     Write-RoleLog "$label timeout exit=124"
     exit 124
   }
+  $p.WaitForExit()
   $rc = $p.ExitCode
+  if ($null -eq $rc) { $rc = 1 }
+  Add-TickOutput $outF $label
+  Add-TickOutput $errF "$label stderr"
   Write-RoleLog "$label exit=$rc"
   exit $rc
 }
@@ -94,7 +143,7 @@ if ($Role -eq 'Primary') {
   $env:ORB_V4_HOST = 'yopc'
   Remove-Item Env:ORB_V4_NO_PUBLISH -ErrorAction SilentlyContinue
   $pyArgs = @('-m', 'paper_broker.failover.cli', 'primary-daemon', '--role', 'primary', '--host', 'yopc')
-  if ($DryRun) { $pyArgs += '--dry-run' }
+  if ($DryRun) { $pyArgs += '--dry-run' } else { Wait-V4ScanFire }
   Invoke-V4Tick $pyArgs 'primary-daemon'
 }
 $env:ORB_V4_ROLE = 'backup'

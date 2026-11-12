@@ -528,6 +528,30 @@ class FailoverTests(unittest.TestCase):
         self.assertEqual(got, "skipped_not_a_slot")
         self.assertEqual(calls, [])
 
+    def test_one_shot_cli_waits_for_background_publish(self):
+        """2026-11-12: the 13:05 verify push was lost and YOPC never published;
+        a one-shot tick exited before its daemon publish thread ran."""
+        self._pub_patch.stop()
+        import time as _t
+        from paper_broker.failover import dashboard_publish as dp
+        done = []
+        os.environ["ORB_V4_RUN"] = str(self.root / "pubjoin")
+        try:
+            got = dp.schedule_publish(
+                host="yopc", role="primary", publish_allowed=True,
+                slot=Slot(pt(2026, 11, 13, 6, 0), "scan"), rc=0,
+                fetch=lambda: None,
+                pusher=lambda: (_t.sleep(0.3), done.append("pushed")),
+            )
+            self.assertEqual(got, "scheduled")
+            self.assertEqual(dp.join_pending(5), 0)
+        finally:
+            os.environ.pop("ORB_V4_RUN", None)
+            self._pub_patch.start()
+        self.assertEqual(done, ["pushed"])
+        cli_src = (ROOT / "paper_broker" / "failover" / "cli.py").read_text(encoding="utf-8")
+        self.assertIn("_join_publishes()", cli_src)
+
     def test_schedule_publish_skips_newer_yopc_heartbeat(self):
         self._pub_patch.stop()
         from paper_broker.failover.dashboard_publish import schedule_publish, write_local_heartbeat
@@ -795,6 +819,25 @@ class FailoverTests(unittest.TestCase):
         self.assertIn("Invoke-V4Tick", role)
         # Task triggers stay in register-tasks.ps1 and must not be rewritten here.
         self.assertNotIn("New-ScheduledTaskTrigger", role)
+
+    def test_primary_task_is_hidden_waited_and_reports_real_exit_code(self):
+        """2026-11-12 YOPC audit: ticks logged 'exit=' (ExitCode null in PS 5.1),
+        the console popped up every minute, and the 1-minute tick at :00 ran each
+        scan a minute late. Reliability only: no strategy change."""
+        role = (ROOT / "deploy" / "orb-v4-role.ps1").read_text(encoding="utf-8")
+        self.assertIn("$null = $p.Handle", role)
+        self.assertIn("if ($null -eq $rc) { $rc = 1 }", role)
+        self.assertIn("-RedirectStandardOutput", role)
+        self.assertIn("Wait-V4ScanFire", role)
+        self.assertIn("($n.Second -lt 21)", role)
+        self.assertIn("$n.Minute -le 30", role)
+        self.assertNotIn("slack", role.lower())
+        vbs = (ROOT / "deploy" / "run-hidden-wait.vbs").read_text(encoding="utf-8")
+        self.assertIn(", 0, True)", vbs)
+        self.assertIn("WScript.Quit rc", vbs)
+        reg = (ROOT / "deploy" / "register-tasks.ps1").read_text(encoding="utf-8")
+        self.assertIn("run-hidden-wait.vbs", reg)
+        self.assertIn("-Execute 'wscript.exe'", reg)
 
 
 if __name__ == "__main__":

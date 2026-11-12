@@ -22,6 +22,10 @@ from paper_broker.failover.publish_policy import should_publish
 
 log = logging.getLogger("orb_v4_publish")
 _push_lock = threading.Lock()
+# Threads started by schedule_publish. primary-daemon/backup-tick are one-shot
+# processes: a daemon thread dies when the process exits, so the CLI joins these
+# before returning (2026-11-12: 13:05 verify publish lost; YOPC never published).
+_pending: list[threading.Thread] = []
 
 KIND_OK = {"scan", "exit", "eod", "verify"}
 
@@ -187,6 +191,7 @@ def schedule_publish(
         worker = pusher or _push
         thread = threading.Thread(target=worker, name="orb-v4-pages-publish", daemon=True)
         thread.start()
+        _pending.append(thread)
         if wait:
             thread.join(timeout=700)
         return "scheduled"
@@ -197,3 +202,25 @@ def schedule_publish(
         except Exception:
             pass
         return f"error:{type(e).__name__}"
+
+
+def join_pending(timeout_s: float) -> int:
+    """Wait (bounded) for background Pages pushes started in this process.
+
+    Returns how many are still running after the wait. Never raises.
+    """
+    import time as _time
+    deadline = _time.monotonic() + max(0.0, float(timeout_s))
+    left = 0
+    for t in list(_pending):
+        try:
+            t.join(timeout=max(0.0, deadline - _time.monotonic()))
+            if t.is_alive():
+                left += 1
+            else:
+                _pending.remove(t)
+        except Exception:
+            left += 1
+    if left:
+        _append_log(f"publish still running at process exit: {left}")
+    return left

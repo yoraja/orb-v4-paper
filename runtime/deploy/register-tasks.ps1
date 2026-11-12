@@ -18,7 +18,10 @@ foreach ($name in @($PrimaryName, $BackupName)) {
 $Base = if ($env:ORB_V4_BASE) { $env:ORB_V4_BASE } else { 'C:\Users\yogjr\.orb-v4-paper' }
 $RoleScript = Join-Path $Base 'orb-v4-role.ps1'
 $Pwsh = 'powershell.exe'
-$PrimaryTr = "$Pwsh -NoProfile -ExecutionPolicy Bypass -File `"$RoleScript`" -Role Primary"
+# Primary runs every minute in yogjr's desktop session: launch it hidden but waited, so no console pops up
+# and Task Scheduler still tracks the real run (IgnoreNew, 12-minute limit) and exit code.
+$HiddenWait = Join-Path $Base 'run-hidden-wait.vbs'
+$PrimaryTr = "wscript.exe //B //Nologo `"$HiddenWait`" `"$RoleScript`" -Role Primary"
 $BackupTr = "$Pwsh -NoProfile -ExecutionPolicy Bypass -File `"$RoleScript`" -Role Backup"
 
 Write-Output "YOPC primary task: $PrimaryName weekdays 05:55 local PT, every 1 minute for 7 hours 30 minutes (primary-daemon is a one-shot tick, not a loop). $PrimaryTr"
@@ -50,7 +53,12 @@ if ($existing) {
 }
 
 $codeDir = Join-Path $Base 'code'
-$action = New-ScheduledTaskAction -Execute $Pwsh -Argument $arguments -WorkingDirectory $codeDir
+if ($Role -eq 'Primary') {
+  if (-not (Test-Path $HiddenWait)) { throw "FAIL CLOSED: hidden launcher missing: $HiddenWait" }
+  $action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "//B //Nologo `"$HiddenWait`" `"$RoleScript`" -Role Primary" -WorkingDirectory $codeDir
+} else {
+  $action = New-ScheduledTaskAction -Execute $Pwsh -Argument $arguments -WorkingDirectory $codeDir
+}
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At $at
 # primary-daemon / backup-tick are one-shot plan/run, not a loop. Repeat through the session.
 # 1-minute primary ticks stay inside scan (10 min) and exit (3 min) late windows.
