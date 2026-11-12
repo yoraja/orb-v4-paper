@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ORB v4 PAPER backup timer
+Comment=Restart the ORB v4 PAPER box backup supervisor after a desktop start. Paper only. Does not touch LIVE ORB v3.
+Exec=/workspace/orb-v4-paper/paper_broker/scripts/orb_v4_backup_timer.sh ensure
+TryExec=/workspace/orb-v4-paper/paper_broker/scripts/orb_v4_backup_timer.sh
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+X-XFCE-Autostart-Override=true

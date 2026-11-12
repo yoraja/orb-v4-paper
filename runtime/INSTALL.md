@@ -164,3 +164,20 @@ steps were not executed: Task Scheduler registration, `py -3.12 -m venv`,
 PowerShell `ParseExact` (the format string is pinned and the Python parser is
 tested), toast notifications, the Windows git credential helper, and stopping
 the live box daemon. No Alpaca call was made.
+
+## Box backup auto-restart after a VM recycle
+
+The box backup supervisor is a nohup/`flock` process and dies when the box
+pod/VM recycles. systemd is not PID 1 on the current box and cron is not
+available, so the installer uses the same class of hook as the LIVE v3 timer:
+`ensure` from `~/.bashrc`, plus an XDG autostart entry. `ensure` starts the
+supervisor only when v4 paper keys are already in the environment. It never
+prints or writes secrets and never touches `box-secrets.json`. The flock lock
+allows only one supervisor.
+
+```bash
+bash deploy/install-box-backup-boot-hook.sh install
+```
+
+Details: `deploy/BOX_BACKUP_BOOT.md`. This does not change the 10-minute backup
+catch-up window for missed exit/eod/verify slots.

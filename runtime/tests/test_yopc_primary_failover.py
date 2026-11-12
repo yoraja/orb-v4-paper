@@ -657,6 +657,34 @@ class FailoverTests(unittest.TestCase):
         self.assertNotIn("strategy.html", names)
         self.assertNotIn("heartbeat.json", names)
 
+    def test_backup_window_at_1250_keeps_ten_minute_policy(self):
+        """Restarting the box at 12:50 PT can still catch 12:46, not yet 12:55/13:05.
+
+        Backup due slots use backup_window_ok (10 min), not late_ok. This test
+        locks that existing policy; it does not widen or shrink the window.
+        """
+        from paper_broker.failover.schedule import BACKUP_WINDOW_MIN, backup_window_ok, late_ok
+        self.assertEqual(BACKUP_WINDOW_MIN, 10)
+        now = datetime(2026, 11, 12, 12, 50, tzinfo=ZoneInfo("America/Los_Angeles"))
+        by_kind = {s.kind: s for s in regular_grid(now.date()) if s.kind in ("exit", "eod", "verify")}
+        self.assertTrue(backup_window_ok(by_kind["exit"], now))
+        self.assertFalse(late_ok(by_kind["exit"], now))  # exit late_ok is 3 minutes
+        self.assertFalse(backup_window_ok(by_kind["eod"], now))
+        self.assertFalse(backup_window_ok(by_kind["verify"], now))
+        later = datetime(2026, 11, 12, 13, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        self.assertFalse(backup_window_ok(by_kind["exit"], later))
+        self.assertTrue(backup_window_ok(by_kind["eod"], later))
+
+    def test_backup_timer_script_has_ensure_and_flock(self):
+        text = (ROOT / "paper_broker" / "scripts" / "orb_v4_backup_timer.sh").read_text(encoding="utf-8")
+        self.assertIn("flock -n", text)
+        self.assertIn("ensure)", text)
+        self.assertIn("keys_ok", text)
+        installer = (ROOT / "deploy" / "install-box-backup-boot-hook.sh").read_text(encoding="utf-8")
+        self.assertIn("orb_v4_backup_timer.sh", installer)
+        self.assertIn("$TIMER ensure", installer)
+        self.assertNotIn("box-secrets.json", text)
+
 
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(FailoverTests)
