@@ -157,11 +157,13 @@ def _engine_executor(slot, token: str) -> dict:
     The cloud tree has no engine and does not set ORB_V4_ENGINE_ALLOW, so this
     returns without a subprocess. The host role script sets the allow flag only
     after INSTALL.md prechecks.
+
+    The engine runs in a new process group with a hard wall-clock budget so a
+    hung HTTPS call cannot block a later close slot. See tick_budget.py.
     """
     if os.environ.get("ORB_V4_ENGINE_ALLOW") != "1":
         return {"rc": 2, "orders": 0, "detail": "engine launch not allowed in this process"}
     import importlib.util
-    import subprocess
     if importlib.util.find_spec("paper_broker.orb_v4_paper") is None:
         return {"rc": 2, "orders": 0, "detail": "installed engine paper_broker.orb_v4_paper not found"}
     env = dict(os.environ)
@@ -172,12 +174,16 @@ def _engine_executor(slot, token: str) -> dict:
     for flag in ("--live", "--arm"):
         if flag in env.get("ORB_V4_ENGINE_ARGS", ""):
             return {"rc": 2, "orders": 0, "detail": "refusing live/arm"}
-    proc = subprocess.run(
+    from paper_broker.failover.tick_budget import run_process_group, tick_timeout_seconds
+    timeout_s = tick_timeout_seconds(_now(None, False), kind=slot.kind)
+    rc = run_process_group(
         [sys.executable, "-m", "paper_broker.orb_v4_paper", slot.kind],
         env=env,
         cwd=os.environ.get("ORB_V4_HOME") or None,
+        timeout_s=timeout_s,
     )
-    return {"rc": int(proc.returncode or 0), "orders": 0, "detail": "engine exit"}
+    detail = "tick_timeout" if rc == 124 else "engine exit"
+    return {"rc": int(rc or 0), "orders": 0, "detail": detail}
 
 
 def cmd_self_test() -> int:
@@ -200,6 +206,8 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     _refuse_flags(argv)
     args = build_parser().parse_args(argv)
+    from paper_broker.failover.http_timeouts import install_runtime_timeouts
+    install_runtime_timeouts()
     if args.cmd == "self-test":
         return cmd_self_test()
     if args.cmd == "plan":

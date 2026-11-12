@@ -27,19 +27,49 @@ raise SystemExit(0 if ok else 1)
 PY
 }
 next_sleep(){
-  python3 - <<'PY'
+  python3 - <<'NEXTSLEEP'
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 now=datetime.now(ZoneInfo('America/Los_Angeles'))
-# sleep until the next 5-minute boundary, at least 5s, at most 60s past a tick
+# Next 5-minute boundary, and also wake at close slots so a just-killed
+# scan cannot push exit/eod/verify to the following 5-minute tick.
+cands=[]
 minute = (now.minute // 5 + 1) * 5
 delta = timedelta(minutes=minute-now.minute, seconds=-now.second, microseconds=-now.microsecond)
 if minute >= 60:
     delta = timedelta(hours=1, minutes=-now.minute, seconds=-now.second, microseconds=-now.microsecond)
-secs=max(5, int(delta.total_seconds()))
+cands.append(now + delta)
+for hh, mm in ((12, 46), (12, 55), (13, 5)):
+    t = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if t > now:
+        cands.append(t)
+secs=max(5, int((min(cands)-now).total_seconds()))
 print(secs)
-PY
+NEXTSLEEP
 }
+run_tick(){
+  # Hard wall-clock budget (8 min, or sooner if a close slot is imminent).
+  # The tick runs in a new session so a hung engine child is killed with it.
+  local budget tpid wrc rc
+  budget=$(PYTHONPATH="$REPO" "$REPO/venv-paper/bin/python" -m paper_broker.failover.tick_budget --seconds 2>/dev/null || true)
+  case "$budget" in
+    ''|*[!0-9]*) budget=480 ;;
+  esac
+  log "tick start budget_s=$budget"
+  setsid bash "$ROLE" Backup >>"$LOG" 2>&1 &
+  tpid=$!
+  PYTHONPATH="$REPO" "$REPO/venv-paper/bin/python" -m paper_broker.failover.tick_budget --watch "$tpid" >/dev/null 2>&1
+  wrc=$?
+  wait "$tpid" 2>/dev/null
+  rc=$?
+  if [ "$wrc" -eq 124 ]; then
+    log "tick timeout budget_s=$budget — killed hung tick and released leftover lock"
+    PYTHONPATH="$REPO" "$REPO/venv-paper/bin/python" -m paper_broker.failover.tick_budget --release-locks >/dev/null 2>&1 || true
+  elif [ "${rc:-0}" -ne 0 ]; then
+    log "tick rc=$rc"
+  fi
+}
+
 case "${1:-status}" in
   start)
     keys_ok || { echo "REFUSED: ORB_V4_ALPACA_PAPER_* env not set"; exit 3; }
@@ -59,8 +89,7 @@ case "${1:-status}" in
     export ORB_V4_ENGINE_ALLOW=1
     while [ ! -f "$STOPF" ]; do
       if in_window; then
-        log "tick start"
-        bash "$ROLE" Backup >>"$LOG" 2>&1 || log "tick rc=$?"
+        run_tick
         python3 -c "import json,time; from pathlib import Path; Path('$HB').write_text(json.dumps({'alive_epoch':int(time.time()),'alive_pt':__import__('datetime').datetime.now(__import__('zoneinfo').ZoneInfo('America/Los_Angeles')).isoformat(),'role':'backup'}))"
       fi
       sleep "$(next_sleep)"

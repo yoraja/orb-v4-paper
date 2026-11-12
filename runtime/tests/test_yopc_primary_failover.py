@@ -685,6 +685,24 @@ class FailoverTests(unittest.TestCase):
         self.assertIn("$TIMER ensure", installer)
         self.assertNotIn("box-secrets.json", text)
 
+    def test_backup_timer_and_role_have_tick_timeout_and_close_wakeups(self):
+        text = (ROOT / "paper_broker" / "scripts" / "orb_v4_backup_timer.sh").read_text(encoding="utf-8")
+        self.assertIn("run_tick", text)
+        self.assertIn("tick_budget", text)
+        self.assertIn("--watch", text)
+        self.assertIn("--release-locks", text)
+        self.assertIn("(12, 46)", text)
+        self.assertIn("(12, 55)", text)
+        self.assertIn("(13, 5)", text)
+        role = (ROOT / "deploy" / "orb-v4-role.ps1").read_text(encoding="utf-8")
+        self.assertIn("PYTHONPATH", role)
+        self.assertIn("Set-Location", role)
+        self.assertIn("tick_budget", role)
+        self.assertIn("taskkill", role)
+        self.assertIn("Invoke-V4Tick", role)
+        # Task triggers stay in register-tasks.ps1 and must not be rewritten here.
+        self.assertNotIn("New-ScheduledTaskTrigger", role)
+
 
 if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(FailoverTests)

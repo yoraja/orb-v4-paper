@@ -181,3 +181,28 @@ bash deploy/install-box-backup-boot-hook.sh install
 
 Details: `deploy/BOX_BACKUP_BOOT.md`. This does not change the 10-minute backup
 catch-up window for missed exit/eod/verify slots.
+
+## Hung HTTPS calls must not block later slots
+
+A tick (YOPC `primary-daemon`, box `backup-tick`, and the engine subprocess
+they launch) has a hard 8-minute wall-clock cap. Scan ticks are also killed
+15 seconds before 12:46 exit, 12:55 eod, or 13:05 verify, so a hung scan
+cannot overrun those slots. The box supervisor also wakes at those close
+times, not only on its 5-minute grid. A killed tick's process group is
+terminated and `run/locks/orb_v4_paper.lock` is released if it is no longer
+held.
+
+YOPC Task Scheduler triggers are unchanged (1-minute repetition, 12-minute
+`ExecutionTimeLimit`, `IgnoreNew`). The 8-minute / close-preempt cap lives
+in `orb-v4-role.ps1` and in `failover.cli` so a hung scan is gone before the
+next 1-minute trigger runs a close slot.
+
+Alpaca REST and bar-data fetches use a 10s connect / 25s read timeout, with
+bounded connect retries. An order submit that times out or drops is never
+POSTed again; the runtime looks up the order by `client_order_id` and uses
+that result, or fails closed if nothing is found.
+
+Mid-tick lease renewal is unnecessary: the 8-minute cap is shorter than every
+lease TTL (scan 12 min, exit/eod 16 min, verify 10 min). The runner already
+renews the lease at the start of each tick; the next tick renews again after
+a timeout.
