@@ -1,4 +1,4 @@
-# ORB v4 PAPER role wrapper. Paper only. YOPC is primary. Box is the backup.
+﻿# ORB v4 PAPER role wrapper. Paper only. YOPC is primary. Box is the backup.
 # Does not register or edit 'ORB v4 PAPER Recovery Close 20261109'.
 # Does not pass --live or --arm. Does not call a chat webhook.
 # Slot stamps use the preserved ParseExact fix: 'yyyy-MM-ddHHmm' (no space, no colon).
@@ -69,7 +69,7 @@ function Invoke-V4Tick([string[]]$PyArgs, [string]$label) {
   Write-RoleLog "start $label budget_s=$budget cwd=$(Get-Location) py=$Py home=$($env:ORB_V4_HOME)"
   $p = Start-Process -FilePath $Py -ArgumentList $PyArgs -WorkingDirectory $env:ORB_V4_HOME -PassThru -NoNewWindow
   if (-not $p.WaitForExit($budget * 1000)) {
-    Write-RoleLog "tick timeout after ${budget}s — killing pid=$($p.Id) and children"
+    Write-RoleLog "tick timeout after ${budget}s - killing pid=$($p.Id) and children"
     try { & taskkill /PID $p.Id /T /F | Out-Null } catch {
       try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch {}
     }
