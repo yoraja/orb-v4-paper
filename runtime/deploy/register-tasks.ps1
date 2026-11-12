@@ -21,12 +21,12 @@ $Pwsh = 'powershell.exe'
 $PrimaryTr = "$Pwsh -NoProfile -ExecutionPolicy Bypass -File `"$RoleScript`" -Role Primary"
 $BackupTr = "$Pwsh -NoProfile -ExecutionPolicy Bypass -File `"$RoleScript`" -Role Backup"
 
-Write-Output "YOPC primary task: $PrimaryName weekdays 05:55 local PT. $PrimaryTr"
+Write-Output "YOPC primary task: $PrimaryName weekdays 05:55 local PT, every 1 minute for 7 hours 30 minutes (primary-daemon is a one-shot tick, not a loop). $PrimaryTr"
 Write-Output "Box backup task: $BackupName weekdays 06:01 local PT, every 5 minutes for 7 hours 25 minutes. $BackupTr"
 Write-Output "Do not modify or unregister: $Recovery"
 Write-Output 'After cutover, disable (do not delete) ORB v4 PAPER Failover Watchdog on YOPC and stop only the PAPER box orb_v4_timer.py daemon.'
 Write-Output 'Grid: scan 06:00:20-12:45:20 PT every 15m (signal-only before 07:30), exit 12:46, eod 12:55, verify 13:05, post-close 13:20.'
-Write-Output "schtasks primary: schtasks /Create /TN `"$PrimaryName`" /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 05:55 /TR `"$PrimaryTr`" /RL LIMITED /F"
+Write-Output "schtasks primary: schtasks /Create /TN `"$PrimaryName`" /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 05:55 /RI 1 /DU 07:30 /TR `"$PrimaryTr`" /RL LIMITED /F"
 Write-Output "schtasks backup: schtasks /Create /TN `"$BackupName`" /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 06:01 /RI 5 /DU 07:25 /TR `"$BackupTr`" /RL LIMITED /F"
 Write-Output 'If /RI is rejected on WEEKLY, create the backup task in Task Scheduler with a 5-minute repetition for 7 hours 25 minutes, or pass -Register -Role Backup to this script.'
 
@@ -49,13 +49,21 @@ if ($existing) {
   Write-Output "previous task exported to $bak"
 }
 
-$action = New-ScheduledTaskAction -Execute $Pwsh -Argument $arguments
+$codeDir = Join-Path $Base 'code'
+$action = New-ScheduledTaskAction -Execute $Pwsh -Argument $arguments -WorkingDirectory $codeDir
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At $at
+# primary-daemon / backup-tick are one-shot plan/run, not a loop. Repeat through the session.
+# 1-minute primary ticks stay inside scan (10 min) and exit (3 min) late windows.
+# ExecutionTimeLimit 12 min lets a slow scan finish but kills a hung tick so IgnoreNew cannot block the rest of the day.
+if ($Role -eq 'Primary') {
+  $rep = New-ScheduledTaskTrigger -Once -At $at -RepetitionInterval (New-TimeSpan -Minutes 1) -RepetitionDuration (New-TimeSpan -Hours 7 -Minutes 30)
+  $trigger.Repetition = $rep.Repetition
+}
 if ($Role -eq 'Backup') {
   $rep = New-ScheduledTaskTrigger -Once -At $at -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Hours 7 -Minutes 25)
   $trigger.Repetition = $rep.Repetition
 }
-$limit = if ($Role -eq 'Primary') { New-TimeSpan -Hours 8 } else { New-TimeSpan -Minutes 25 }
+$limit = if ($Role -eq 'Primary') { New-TimeSpan -Minutes 12 } else { New-TimeSpan -Minutes 25 }
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit $limit
 $principal = $null
 foreach ($srcName in @('ORB v4 PAPER Failover Watchdog', 'ORB Box Heartbeat Check')) {
