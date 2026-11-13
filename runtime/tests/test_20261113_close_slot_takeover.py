@@ -110,7 +110,7 @@ class Nov13(unittest.TestCase):
         self.assertEqual(self.t.doc["owner"], "yopc")
         self.assertEqual(self.calls, [])
         # Even with the YOPC heartbeat unpublished, YOPC's own 12:30 lease write is liveness.
-        d2 = self.runner("backup", pt(12, 49, 0), hb=yopc_hb(pt(11, 0, 0), slot="1100")).run(self.ex)
+        d2 = self.runner("backup", pt(12, 44, 0), hb=yopc_hb(pt(11, 0, 0), slot="1100")).run(self.ex)
         self.assertEqual((d2.action, d2.reason), ("idle", "primary_healthy"))
 
     # ---- 2. YOPC fires the 12:45 scan at +20 s and keeps the lease through the close
@@ -190,16 +190,42 @@ class Nov13(unittest.TestCase):
 
     # ---- 5. the backup still covers a truly dead primary, with the exit first
     def test_backup_covers_dead_yopc_close_slots(self):
+        # YOPC died after its 12:30 scan; it never ran 12:45 or 12:46.
         hb = yopc_hb(pt(12, 31, 23))
-        for t in (pt(12, 46, 3), pt(12, 47, 40), pt(12, 50, 20)):
-            d = self.runner("backup", t, hb=hb).run(self.ex)
-            self.assertEqual((d.action, d.reason), ("idle", "primary_healthy"), t)
-        d = self.runner("backup", pt(12, 51, 30), hb=hb).run(self.ex)
+        d = self.runner("backup", pt(12, 46, 3), hb=hb).run(self.ex)
+        self.assertEqual((d.action, d.reason), ("idle", "primary_healthy"))
+        # 12:48 supervisor tick: exit 2 min overdue and not completed -> cover it
+        # before the 12:50 PT MOC cutoff, exit first.
+        d = self.runner("backup", pt(12, 48, 3), hb=hb).run(self.ex)
         self.assertEqual((d.action, d.reason), ("run", "takeover"))
         self.assertEqual(self.calls, ["box exit 1246", "box scan 1245"])
         self.runner("backup", pt(12, 55, 5), hb=hb).run(self.ex)
         self.runner("backup", pt(13, 5, 5), hb=hb).run(self.ex)
         self.assertEqual(self.calls[2:], ["box eod 1255", "box verify 1305"])
+
+    def test_backup_covers_exit_before_moc_cutoff_when_yopc_dies_at_close(self):
+        # YOPC ran the 12:45 scan (lease renewed 12:45:21) and then died.
+        doc = dict(self.t.doc)
+        doc.update({"renewed_utc": utc(pt(12, 45, 21)), "acquired_utc": utc(pt(12, 45, 21)),
+                    "expires_utc": utc(pt(12, 47, 30)), "slot": "1245",
+                    "completed": list(COMPLETED_MORNING) + ["2026-11-13 scan 1245"]})
+        self.t._commit(doc)
+        hb = yopc_hb(pt(12, 46, 0), slot="1245")
+        d = self.runner("backup", pt(12, 47, 0), hb=hb).run(self.ex)
+        self.assertEqual(d.action, "idle")  # exit only 60 s old: give YOPC its turn
+        d = self.runner("backup", pt(12, 48, 3), hb=hb).run(self.ex)
+        self.assertEqual((d.action, d.reason), ("run", "takeover"))
+        self.assertEqual(self.calls, ["box exit 1246"])  # before the 12:50 MOC cutoff
+
+    def test_backup_does_not_preempt_yopc_that_renewed_for_exit(self):
+        doc = dict(self.t.doc)
+        doc.update({"status": "released", "renewed_utc": utc(pt(12, 46, 5)), "acquired_utc": utc(pt(12, 45, 21)),
+                    "expires_utc": utc(pt(12, 46, 30)),
+                    "completed": list(COMPLETED_MORNING) + ["2026-11-13 scan 1245", "2026-11-13 exit 1246"]})
+        self.t._commit(doc)
+        d = self.runner("backup", pt(12, 48, 3), hb=yopc_hb(pt(12, 31, 23))).run(self.ex)
+        self.assertEqual(d.action, "idle")
+        self.assertEqual(self.calls, [])
 
     def test_critical_grace_lets_primary_tick_first(self):
         doc = dict(self.t.doc)
@@ -244,6 +270,7 @@ class Nov13(unittest.TestCase):
         self.assertIn("$n.Minute -le 45", ps1)
         sh = (ROOT / "paper_broker" / "scripts" / "orb_v4_backup_timer.sh").read_text(encoding="utf-8")
         self.assertIn("ORB_V4_CLOCK_JUMP_S", sh)
+        self.assertIn('"12:48:00"', sh)
 
 
 if __name__ == "__main__":

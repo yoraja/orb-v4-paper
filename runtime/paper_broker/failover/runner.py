@@ -371,6 +371,23 @@ class Runner:
                         pass
         return max(seen) if seen else None
 
+    def _missed_latest(self, doc: dict | None) -> bool:
+        """True if the latest slot that fired >= 90 s ago is neither completed on
+        the lease nor covered by a YOPC heartbeat (and YOPC is not holding).
+
+        A live YOPC holds the lease while it runs a slot and records it in
+        ``completed`` when done, including 12:45, 12:46, 12:55 and 13:05.
+        """
+        fired = [s for s in self.slots
+                 if (self.now - s.fire_at).total_seconds() >= CRITICAL_GRACE_S]
+        if not fired:
+            return False
+        latest = max(fired, key=lambda s: s.when)
+        if latest.key in set((doc or {}).get("completed") or []):
+            return False
+        cover = self.heartbeat.as_cover() if self.heartbeat else None
+        return not heartbeat_covers_slot(cover, latest)
+
     def _stale(self, doc: dict | None = None) -> bool:
         """Primary is stale only if not seen for a full scan interval plus 5 minutes."""
         last = self._primary_last_seen(doc)
@@ -425,12 +442,15 @@ class Runner:
                 base.publish_allowed = True
                 return base
             return self._acquire(base, read, doc, due, "backup_renew", dry_run)
-        if not self._stale(doc):
-            # Never take over while the primary's heartbeat or lease is fresh.
+        critical = self._critical_due()
+        if not self._stale(doc) and not (critical and self._missed_latest(doc)):
+            # Never take over while the primary's heartbeat or lease is fresh,
+            # unless a close slot is 90 s overdue and the primary has shown no
+            # sign of life since the latest slot fired (dead at the close).
             base.action = "idle"
             base.reason = "primary_healthy"
             return base
-        if len(missed) < MISSED_SLOTS and not self._critical_due():
+        if len(missed) < MISSED_SLOTS and not critical:
             base.action = "idle"
             base.reason = "primary_healthy"
             return base

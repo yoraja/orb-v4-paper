@@ -36,7 +36,9 @@ next_sleep(){
   mins_to=$((5 - (min % 5)))
   if [ "$mins_to" -le 0 ]; then mins_to=5; fi
   target=$((now_s + mins_to * 60 - sec))
-  for close in "12:46:00" "12:55:00" "13:05:00"; do
+  # 12:48 lets the backup cover a dead primary's 12:46 exit before the 12:50
+  # PT MOC cutoff (2026-11-13 fix: the backup now waits 90 s for YOPC first).
+  for close in "12:46:00" "12:48:00" "12:55:00" "13:05:00"; do
     ts=$(date -d "today $close" +%s 2>/dev/null || true)
     if [ -n "${ts:-}" ] && [ "$ts" -gt "$now_s" ] && [ "$ts" -lt "$target" ]; then
       target=$ts
