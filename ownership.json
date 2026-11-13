@@ -1,6 +1,6 @@
 {
  "account_pin_last4": "J7D0",
- "acquired_utc": "2026-11-13T20:30:22.294831+00:00",
+ "acquired_utc": "2026-11-13T20:46:04.299405+00:00",
  "completed": [
   "2026-11-11 scan 0830",
   "2026-11-12 exit 1246",
@@ -35,17 +35,17 @@
   "2026-11-13 scan 1230"
  ],
  "date": "2026-11-13",
- "epoch": 30,
- "expires_utc": "2026-11-13T20:42:22.294831+00:00",
- "instance": "yopc-cli",
+ "epoch": 31,
+ "expires_utc": "2026-11-13T21:02:04.299405+00:00",
+ "instance": "box-cli",
  "kind": "scan",
- "owner": "yopc",
+ "owner": "box",
  "primary_host": "yopc",
- "reason": "primary",
- "renewed_utc": "2026-11-13T20:30:22.294831+00:00",
+ "reason": "takeover",
+ "renewed_utc": "2026-11-13T20:46:04.299405+00:00",
  "schema": 1,
- "slot": "1230",
+ "slot": "1245",
  "status": "holding",
- "token": "30:yopc:yopc-cli",
+ "token": "31:box:box-cli",
  "track": "v4paper"
 }
