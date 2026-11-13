@@ -86,8 +86,11 @@ function Wait-V4ScanFire {
   # 20 s before the scan's fire time, so the tick found nothing due and the scan
   # ran a minute late on the next tick. Wait for +21 s so it fires like LIVE.
   $n = Get-Date
-  # 12:45 is left as before: its scan is past the entry cutoff and shares the 12:46 exit tick.
-  $inGrid = ($n.Hour -ge 6) -and (($n.Hour -lt 12) -or ($n.Hour -eq 12 -and $n.Minute -le 30))
+  # 2026-11-13: 12:45 is included. Skipping it left YOPC without the lease at
+  # 12:46:02 and the box won the race for the close slots. The 12:45 scan places
+  # no entries (no entries >= 12:45 PT); taking it at +20 s keeps the lease on
+  # YOPC from 12:45 through the 12:46 exit, 12:55 eod and 13:05 verify.
+  $inGrid = ($n.Hour -ge 6) -and (($n.Hour -lt 12) -or ($n.Hour -eq 12 -and $n.Minute -le 45))
   if ($inGrid -and ($n.Minute % 15 -eq 0) -and ($n.Second -lt 21)) {
     $ms = [int]((21 - $n.Second) * 1000 - $n.Millisecond)
     if ($ms -gt 0) {

@@ -289,7 +289,9 @@ class FailoverTests(unittest.TestCase):
         # Clear completed so the backup has a due slot, then let it acquire.
         self.transport.doc["completed"] = []
         self.transport.doc["status"] = "holding"
-        backup = self.runner("backup", when + timedelta(minutes=20), instance="box-1",
+        # 2026-11-13: the primary's own 10:46 lease write counts as liveness for
+        # PRIMARY_FRESH_S (20 min), so the backup may act only after that.
+        backup = self.runner("backup", when + timedelta(minutes=21), instance="box-1",
                              heartbeat=hb(pt(2026, 11, 6, 10, 7)), state=self.root / "box").run(self.executor)
         self.assertEqual(backup.action, "run")
         os.environ["ORB_V4_FENCE_REQUIRED"] = "1"
@@ -297,7 +299,7 @@ class FailoverTests(unittest.TestCase):
         self.assertFalse(holds_fence(when.astimezone(timezone.utc)))
         with self.assertRaises(SystemExit):
             assert_fence()
-        restarted = self.runner("primary", when + timedelta(minutes=20), instance="yopc-b",
+        restarted = self.runner("primary", when + timedelta(minutes=21), instance="yopc-b",
                                 state=self.root / "restart").run(self.executor)
         self.assertEqual(restarted.action, "idle")
         self.assertEqual(restarted.reason, "lease_held_elsewhere")
@@ -830,7 +832,7 @@ class FailoverTests(unittest.TestCase):
         self.assertIn("-RedirectStandardOutput", role)
         self.assertIn("Wait-V4ScanFire", role)
         self.assertIn("($n.Second -lt 21)", role)
-        self.assertIn("$n.Minute -le 30", role)
+        self.assertIn("$n.Minute -le 45", role)  # 2026-11-13: 12:45 included
         self.assertNotIn("slack", role.lower())
         vbs = (ROOT / "deploy" / "run-hidden-wait.vbs").read_text(encoding="utf-8")
         self.assertIn(", 0, True)", vbs)

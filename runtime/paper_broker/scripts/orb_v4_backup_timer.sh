@@ -87,12 +87,21 @@ case "${1:-status}" in
     echo $$ > "$PIDF"
     log "supervisor start pid=$$"
     export ORB_V4_ENGINE_ALLOW=1
+    jump=0
     while [ ! -f "$STOPF" ]; do
       if in_window; then
+        # 2026-11-13: the box VM froze 12:46-13:17 PT. A sleep that ends far
+        # later by wall clock (date +%s) than asked means a freeze/resume: the
+        # next tick idles (and hands back a lease it holds) instead of trading.
+        export ORB_V4_CLOCK_JUMP_S="$jump"
+        if [ "$jump" -ge 60 ]; then log "clock jump ${jump}s after sleep (VM freeze/resume) - tick will idle"; fi
         run_tick
         timeout 5s python3 -c "import json,time; from pathlib import Path; Path('$HB').write_text(json.dumps({'alive_epoch':int(time.time()),'alive_pt':__import__('datetime').datetime.now(__import__('zoneinfo').ZoneInfo('America/Los_Angeles')).isoformat(),'role':'backup'}))" || log "heartbeat write skipped or timed out"
       fi
-      secs=$(next_sleep || true); case "$secs" in ''|*[!0-9]*) secs=30 ;; esac; if [ "$secs" -gt 300 ]; then secs=300; fi; sleep "$secs"
+      secs=$(next_sleep || true); case "$secs" in ''|*[!0-9]*) secs=30 ;; esac; if [ "$secs" -gt 300 ]; then secs=300; fi
+      if [ "$jump" -ge 60 ]; then secs=30; fi
+      t_sleep=$(date +%s); sleep "$secs"; t_wake=$(date +%s)
+      jump=$(( t_wake - t_sleep - secs )); if [ "$jump" -lt 0 ]; then jump=0; fi
     done
     rm -f "$PIDF"
     log "supervisor exit"

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,9 +23,13 @@ from zoneinfo import ZoneInfo
 from paper_broker.failover.close_guard import market_close_coid, moc_close_coid
 from paper_broker.failover.schedule import (
     BACKUP_HOST,
+    CLOCK_JUMP_S,
+    CRITICAL_GRACE_S,
     GRACE_MIN,
     LEASE_TTL_S,
+    MAX_TICK_WALL_S,
     MISSED_SLOTS,
+    PRIMARY_FRESH_S,
     PRIMARY_HOST,
     SKEW_S,
     Slot,
@@ -37,6 +42,7 @@ from paper_broker.failover.schedule import (
     mark_outcome,
     missed_slots,
     phase_for,
+    run_order,
 )
 from paper_broker.failover.transport import OwnershipPrerequisite, TransportError, WriteResult
 
@@ -183,6 +189,9 @@ class Runner:
         heartbeat: Heartbeat | None,
         account: AccountContext | None = None,
         skew_s: int = SKEW_S,
+        clock_jump_s: float = 0.0,
+        wall=time.time,
+        mono=time.monotonic,
     ):
         if role == "primary" and host != PRIMARY_HOST:
             raise ValueError("primary host is yopc")
@@ -200,6 +209,13 @@ class Runner:
         self.heartbeat = heartbeat
         self.account = account or AccountContext()
         self.skew_s = skew_s
+        # Seconds the host clock jumped (VM freeze/resume) before this tick,
+        # measured by the caller from wall-clock time. 0 = none seen.
+        self.clock_jump_s = float(clock_jump_s or 0.0)
+        self._wall = wall
+        self._mono = mono
+        self._t0_wall = wall()
+        self._t0_mono = mono()
         self.state_dir.mkdir(parents=True, exist_ok=True)
 
     def plan(self, *, dry_run: bool = False) -> Decision:
@@ -214,14 +230,29 @@ class Runner:
             base.reason = "lease_unreadable"
             base.prerequisite = str(e)
             return base
+        doc = read.doc
+        if self.role == "backup" and self.clock_jump_s >= CLOCK_JUMP_S:
+            # 2026-11-13: the box VM froze 12:46-13:17 PT holding the lease.
+            # After a freeze/resume the backup never takes over; it hands back
+            # a lease it still holds so the primary can run the close slots.
+            if self._same_holder(doc):
+                return self._release(base, read, doc, dry_run, why="clock_jump_release")
+            base.action = "idle"
+            base.reason = "clock_jump_idle"
+            return base
         if self.role == "backup" and (self.heartbeat is None or self.heartbeat.error):
             base.reason = "heartbeat_unreadable"
             return base
-        doc = read.doc
         view = self._view(doc)
         missed = self._missed()
         base.missed = len(missed)
         base.daemon_dead = bool(self.heartbeat and not self.heartbeat.error and len(missed) >= MISSED_SLOTS)
+        if self.role == "primary" and view in ("held", "ambiguous") and self._backup_holds(doc):
+            # The primary may always reclaim from the backup when it has a due
+            # slot (held, expired or in the skew band). The backup's fencing
+            # token stops it before its next submit; client_order_ids are
+            # deterministic, so a repeated slot cannot double an order.
+            return self._plan_primary(base, read, doc, dry_run, reclaim=True)
         if view == "ambiguous" and not self._same_holder(doc):
             # Clock skew around expiry: a non-holder must not take over.
             # The holder is treated as still holding (see _we_hold).
@@ -244,9 +275,17 @@ class Runner:
         os.environ["ORB_V4_FENCE_REQUIRED"] = "1"
         total = 0
         ran: list[Slot] = []
-        for slot in list(decision.slots):
+        for slot in run_order(list(decision.slots)):
             if is_successful(self.state_dir, slot) or slot.key in self._completed_keys():
                 continue
+            if self._clock_jumped_mid_tick():
+                decision.action = "fail_closed"
+                decision.reason = "clock_jump_mid_tick"
+                decision.fence_confirmed = False
+                decision.publish_allowed = False
+                decision.orders_submitted = total
+                decision.slots = ran
+                return decision
             blocked = guard_reason(self.account, slot, self.now)
             if blocked:
                 decision.action = "fail_closed"
@@ -307,15 +346,53 @@ class Runner:
         # (2026-11-12 13:15 PT lease_expiry_ambiguous on the box).
         return bool(self._same_holder(doc) and self._view(doc) in ("held", "ambiguous"))
 
-    def _stale(self) -> bool:
-        hb = self.heartbeat
-        if hb is None or not hb.is_primary_tick():
-            return True
-        age = (_utcnow(self.now) - _aware(hb.ts_utc)).total_seconds()
-        return age > GRACE_MIN * 60
+    def _backup_holds(self, doc: dict | None) -> bool:
+        return bool(doc and doc.get("status") == "holding" and doc.get("owner") == BACKUP_HOST)
 
-    def _plan_primary(self, base: Decision, read, doc, dry_run: bool) -> Decision:
+    def _clock_jumped_mid_tick(self) -> bool:
+        """Wall clock ran away from monotonic (VM freeze/resume) or the tick is too old."""
+        wall_el = self._wall() - self._t0_wall
+        mono_el = self._mono() - self._t0_mono
+        return abs(wall_el - mono_el) > CLOCK_JUMP_S or wall_el > MAX_TICK_WALL_S
+
+    def _primary_last_seen(self, doc: dict | None) -> datetime | None:
+        """Newest evidence the primary is alive: a YOPC slot heartbeat or a YOPC lease write."""
+        seen: list[datetime] = []
+        hb = self.heartbeat
+        if hb is not None and hb.is_primary_tick():
+            seen.append(_aware(hb.ts_utc))
+        if doc and doc.get("owner") == PRIMARY_HOST:
+            for k in ("renewed_utc", "acquired_utc", "released_utc"):
+                v = doc.get(k)
+                if v:
+                    try:
+                        seen.append(_aware(datetime.fromisoformat(str(v))))
+                    except ValueError:
+                        pass
+        return max(seen) if seen else None
+
+    def _stale(self, doc: dict | None = None) -> bool:
+        """Primary is stale only if not seen for a full scan interval plus 5 minutes."""
+        last = self._primary_last_seen(doc)
+        if last is None:
+            return True
+        age = (_utcnow(self.now) - last).total_seconds()
+        return age > PRIMARY_FRESH_S
+
+    def _plan_primary(self, base: Decision, read, doc, dry_run: bool, *, reclaim: bool = False) -> Decision:
         due = self._due_slots("primary")
+        if reclaim:
+            if not due:
+                base.action = "idle"
+                base.reason = "lease_held_elsewhere"
+                return base
+            blocked = next((guard_reason(self.account, s, self.now) for s in due), None)
+            due = [s for s in due if guard_reason(self.account, s, self.now) is None]
+            if not due:
+                base.action = "fail_closed"
+                base.reason = blocked or "refuse"
+                return base
+            return self._acquire(base, read, doc, due, "primary_reclaim", dry_run)
         if not due and not self._we_hold(doc):
             base.action = "idle"
             base.reason = "nothing_due"
@@ -348,7 +425,12 @@ class Runner:
                 base.publish_allowed = True
                 return base
             return self._acquire(base, read, doc, due, "backup_renew", dry_run)
-        if len(missed) < MISSED_SLOTS and not (self._stale() and self._critical_due()):
+        if not self._stale(doc):
+            # Never take over while the primary's heartbeat or lease is fresh.
+            base.action = "idle"
+            base.reason = "primary_healthy"
+            return base
+        if len(missed) < MISSED_SLOTS and not self._critical_due():
             base.action = "idle"
             base.reason = "primary_healthy"
             return base
@@ -372,6 +454,8 @@ class Runner:
             if slot.kind not in ("exit", "eod", "verify"):
                 continue
             if not backup_window_ok(slot, self.now):
+                continue
+            if (self.now - slot.when).total_seconds() < CRITICAL_GRACE_S:
                 continue
             if is_successful(self.state_dir, slot) or slot.key in self._completed_keys():
                 continue
@@ -518,12 +602,12 @@ class Runner:
         base.entry_permitted = any(entry_permitted(s) for s in due)
         return base
 
-    def _release(self, base: Decision, read, doc, dry_run: bool) -> Decision:
+    def _release(self, base: Decision, read, doc, dry_run: bool, why: str = "primary_heartbeat_newer") -> Decision:
         base.handback = True
         base.publish_allowed = False
         if dry_run:
             base.action = "would_handback"
-            base.reason = "primary_heartbeat_newer"
+            base.reason = why
             return base
         now_utc = _utcnow(self.now)
         epoch = int(doc.get("epoch") or 0) + 1
@@ -549,11 +633,11 @@ class Runner:
             path.unlink()
         self._problem_alert(
             "handback",
-            f"ORB v4 PAPER ℹ️ failover handback — {self.host} released the lease; primary heartbeat is newer.",
+            f"ORB v4 PAPER ℹ️ failover handback — {self.host} released the lease ({why}).",
             dry_run=dry_run,
         )
         base.action = "handback"
-        base.reason = "primary_heartbeat_newer"
+        base.reason = why
         base.fence_confirmed = False
         base.fence_token = None
         base.slots = []

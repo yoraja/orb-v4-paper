@@ -31,6 +31,20 @@ MISSED_SLOTS = 2
 GRACE_MIN = 8
 BACKUP_WINDOW_MIN = 10
 SKEW_S = 20
+# 2026-11-13: the backup took over at 12:46:03 because a 12:31 YOPC heartbeat was
+# older than GRACE_MIN (8 min) while the scan cadence is 15 min. The primary is
+# fresh if it was seen (heartbeat or its own lease write) within one scan
+# interval plus 5 minutes. The backup never takes over while the primary is fresh.
+PRIMARY_FRESH_S = 20 * 60
+# A close slot must be this late before the backup may cover it, so the
+# primary's own on-time tick always wins the lease race.
+CRITICAL_GRACE_S = 90
+# Wall-clock vs monotonic drift (or a sleep overshoot) above this means the box
+# VM was frozen/resumed. The backup idles (and releases a lease it holds).
+CLOCK_JUMP_S = 60
+# A tick older than this (wall clock) must not submit anything.
+MAX_TICK_WALL_S = 9 * 60
+CLOSE_KINDS = ("exit", "eod", "verify")
 
 LATE_OK_S = {"scan": 10 * 60, "exit": 3 * 60, "eod": 4 * 60, "verify": None, "postclose": 15 * 60}
 LEASE_TTL_S = {"scan": 12 * 60, "exit": 16 * 60, "eod": 16 * 60, "verify": 10 * 60, "postclose": 10 * 60}
@@ -119,6 +133,15 @@ def late_ok(slot: Slot, now: datetime) -> bool:
 def backup_window_ok(slot: Slot, now: datetime) -> bool:
     lag = (now - slot.when).total_seconds()
     return 0 <= lag <= BACKUP_WINDOW_MIN * 60
+
+
+def run_order(slots: list[Slot]) -> list[Slot]:
+    """Close slots (exit/eod/verify) run before any older scan sharing the tick.
+
+    A late 12:45 scan (no entries at or after 12:45 PT) must not delay the
+    12:46 exit inside the same tick.
+    """
+    return sorted(slots, key=lambda s: (0 if s.kind in CLOSE_KINDS else 1, s.when))
 
 
 def _marker(state: Path, slot: Slot, suffix: str) -> Path:

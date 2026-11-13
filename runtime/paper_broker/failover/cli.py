@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -90,6 +91,7 @@ def cmd_plan(args) -> int:
         print(str(e))
         return 2
     state = Path(os.environ.get("ORB_V4_RUN") or (Path.home() / ".orb-v4-paper" / "run")) / "state"
+    jump_s = _clock_jump_s(state, host, probe=not args.now) if role == "backup" else 0.0
     runner = Runner(
         role=role,
         host=host,
@@ -100,6 +102,7 @@ def cmd_plan(args) -> int:
         slots=regular_grid(now.date()),
         heartbeat=None if role == "primary" else _unreadable_heartbeat(),
         account=_account_from_env(),
+        clock_jump_s=jump_s,
     )
     # backup-tick without a heartbeat reader fail-closes inside plan (heartbeat_unreadable)
     # unless the operator injected ORB_V4_HEARTBEAT_JSON (no network in this module).
@@ -118,6 +121,38 @@ def cmd_plan(args) -> int:
 
 
 PUBLISH_JOIN_MAX_S = 180
+
+
+def _clock_jump_s(state: Path, host: str, *, probe: bool = True) -> float:
+    """Seconds the wall clock jumped since the last tick (box VM freeze/resume).
+
+    Two wall-clock signals, the larger wins:
+      - ORB_V4_CLOCK_JUMP_S from the supervisor: how far its last sleep overshot
+        by `date +%s` (a 5-minute sleep that ends 31 minutes later = frozen VM);
+      - drift of (time.time() - time.monotonic()) since the previous tick.
+    Never raises; 0 means no jump seen.
+    """
+    try:
+        env = float(os.environ.get("ORB_V4_CLOCK_JUMP_S") or 0)
+    except ValueError:
+        env = 0.0
+    if not probe:
+        return env
+    drift = 0.0
+    path = state / f"clock_probe_{host}.json"
+    off = time.time() - time.monotonic()
+    try:
+        prev = json.loads(path.read_text(encoding="utf-8")).get("offset")
+        if prev is not None:
+            drift = abs(off - float(prev))
+    except Exception:
+        drift = 0.0
+    try:
+        state.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"offset": off, "wall": time.time()}), encoding="utf-8")
+    except Exception:
+        pass
+    return max(env, drift)
 
 
 def _join_publishes() -> None:
