@@ -1,0 +1,26 @@
+# System or user unit for hosts where systemd is PID 1.
+# This box currently boots with /tini -- /pod-daemon, so the unit is not
+# enabled here; install-box-backup-boot-hook.sh will enable it only when
+# systemd is the init. The unit only runs `ensure` (flock prevents duplicates).
+# It does not write or print secrets. At boot the service environment usually
+# lacks v4 paper keys, so ensure no-ops unless the admin has already put
+# ORB_V4_ALPACA_PAPER_* or ORB_V4_PAPER_KEYS_FILE in the service environment.
+[Unit]
+Description=ORB v4 PAPER box backup supervisor
+Documentation=file:///workspace/orb-v4-paper/deploy/BOX_BACKUP_BOOT.md
+After=network-online.target
+ConditionPathExists=/workspace/orb-v4-paper/paper_broker/scripts/orb_v4_backup_timer.sh
+
+[Service]
+Type=oneshot
+User=box
+Group=box
+WorkingDirectory=/workspace/orb-v4-paper
+Environment=TZ=America/Los_Angeles
+Environment=ORB_BROKER_MODE=paper
+# Optional, never commit a secrets file: EnvironmentFile=-/workspace/orb-v4-paper/run/private/v4-paper.env
+ExecStart=/workspace/orb-v4-paper/paper_broker/scripts/orb_v4_backup_timer.sh ensure
+
+[Install]
+WantedBy=multi-user.target
+WantedBy=default.target

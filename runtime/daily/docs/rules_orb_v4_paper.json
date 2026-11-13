@@ -1,0 +1,56 @@
+{
+  "strategy_id": "ORB_v4_PAPER",
+  "name": "ORB v4 PAPER — exact copy of LIVE ORB v3 (NDX liquid-14, 1h OR, OR-mid stop, 2.5R, L/S, 1.5% risk, ~16% notional cap, max 6, cash-only, -2R halt, no entries >=12:45 PT) EXCEPT: 2-trading-day carry instead of flat EOD",
+  "version": "4.1.0-paper",
+  "broker": "alpaca_paper",
+  "asset_class": "us_equities",
+  "alpaca_feasible": true,
+  "rules": {
+    "type": "opening_range_breakout",
+    "universe": ["NVDA", "TSLA", "INTC", "PLTR", "AMD", "AAPL", "AMZN", "GOOGL", "MU", "MSFT", "META", "AVGO", "WMT", "CSCO"],
+    "bar_interval": "60m",
+    "opening_range_bars": 1,
+    "opening_range_note": "First RTH hour high/low.",
+    "entry": "Breakout close beyond ORH (long) or ORL (short); first_break",
+    "stop_loss": "Opening-range midpoint",
+    "profit_target": "2.5R",
+    "trail": null,
+    "partial_scale_out": null,
+    "time_stop": "v4 carry: at 12:55 PT cancel bracket legs of today's still-open entries and carry them; exit MOC at the close of trading day entry+2. Flatten at 12:55 instead if earnings after that day's close or before next open (or earnings unknown).",
+    "filters": {
+      "min_range_bps": 8,
+      "max_range_bps": 250,
+      "one_trade_per_symbol_per_day": true,
+      "allow_short": true,
+      "atr_band": null,
+      "entry_mode": "first_break",
+      "entry_cutoff": null,
+      "trend_filter": "none"
+    },
+    "risk_frac_per_trade": 0.015,
+    "max_concurrent_symbols": 6,
+    "daily_loss_limit_R": -2.0,
+    "max_notional_frac_per_symbol": 0.16,
+    "cash_only": true,
+    "max_concurrent": 6,
+    "same_bar_priority": "highest_or_volume_first",
+    "no_entry_after_pt": "12:45",
+    "min_live_rr": 1.5,
+    "client_order_id_prefix": "orbv4p",
+    "v4_carry": {
+      "enabled": true,
+      "hold_trading_days": 2,
+      "eod_slot_pt": "12:55",
+      "exit_method": "moc",
+      "moc_submit_pt": "12:46",
+      "moc_fallback": "market at 12:55 slot if no accepted MOC order for the due symbol",
+      "earnings_policy": "flatten_at_eod_if_earnings_after_close_or_before_next_open",
+      "earnings_unknown": "flatten_and_alert",
+      "overnight_stops": false
+    }
+  },
+  "v4_deltas_vs_live": [
+    "time_stop: 2-trading-day carry instead of flat EOD",
+    "all other settings match the LIVE v3 rules: 14 symbols, 1.5% risk, 16% cap, 6 concurrent, cash-only, -2R halt, entries until 12:45, OR-mid stop, 2.5R target"
+  ]
+}

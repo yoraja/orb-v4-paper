@@ -1,0 +1,31 @@
+{
+ "passed": true,
+ "evidence": {
+  "ambiguous": "unconfirmed push and expiry inside the skew band submit nothing",
+  "backup_idle_no_publish": "healthy-primary backup submits nothing and does not publish",
+  "backup_takeover_publish": "box backup publishes only after it holds the lease on a takeover slot",
+  "ownership_bootstrap": "first call creates a released lease; later calls do not replace it",
+  "carry": "five-name book; MSFT stop/target filled when blank; existing AAPL stop kept; missing targets stay null",
+  "cli": "CLI self-test passes; --live is refused; plan without the ownership remote exits 2",
+  "closes": "recovery pending/partial blocks a second close; residual close keeps the side; duplicate entry id is rejected; flip is refused",
+  "crash_restart": "expired primary token fails closed; restarted primary does not trade over the backup lease",
+  "dry_run": "dry-run performs no CAS write and no order",
+  "engine_hooks": "fixture submit line o = client.submit_order(req) keeps o; mismatch refuses with no partial edit",
+  "git_cas": "local bare repo compare-and-swap: second host's create is rejected and the first token remains",
+  "settings": "14 symbols, 1.5% risk, 16% cap, 6 concurrent, cash-only, -2R, entries to 12:45, OR-mid, 2.5R, 2-day carry",
+  "handback": "backup releases on a newer YOPC heartbeat and the completed slot is not traded again",
+  "heartbeat_get": "public heartbeat reader is GET-only and tested with a fake opener",
+  "takeover_once": "10:46 takeover of 1045 submits once; second tick and second instance do not; rc 1 is not success",
+  "monday_signal_only": "2026-11-09 06:30 scan runs with zero entry orders",
+  "parse_exact": "yyyy-MM-ddHHmm accepts 2026-11-061045; spaced format rejects; rc 1 is not success",
+  "healthy_primary": "backup idle, zero CAS writes, zero orders",
+  "primary_publish": "primary schedules a dashboard publish after a successful slot",
+  "publish_venv_hooks": "box does not overwrite a newer YOPC liveness heartbeat; symlink venv and dashboard root are refused; recovery bytes are not rewritten",
+  "publish_isolated": "a raising publish hook does not fail or delay the trading slot",
+  "publish_no_overwrite": "box does not push over a newer YOPC heartbeat after takeover",
+  "slow_primary": "stale heartbeat plus unexpired YOPC lease leaves backup idle",
+  "cas_once": "two backup planners, one confirmed lease",
+  "read_errors": "unreadable lease or heartbeat does not take over",
+  "guards": "wrong account, date, closed session, and live URL submit nothing and do not take the lease"
+ }
+}

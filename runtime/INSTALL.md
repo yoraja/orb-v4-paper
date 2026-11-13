@@ -1,0 +1,220 @@
+# ORB v4 PAPER — YOPC primary, box automatic backup
+
+This overlay is not the dashboard. Do not copy it onto the GitHub Pages checkout
+(`index.html`, `strategy.html`, `heartbeat.json`, `.nojekyll`). Install it into
+the existing PAPER runtime directories. It does not deploy itself, start tasks,
+or send orders.
+
+Implemented and tested here: role decisions, git compare-and-swap fencing,
+close/entry guards, carry awareness, and the install refusals. Not done here:
+cutting the hosts over, creating the `ownership` branch, or calling Alpaca.
+
+## What changes
+
+- YOPC runs the primary grid: scan `06:00:20`–`12:45:20` PT every 15 minutes
+  (signal-only before `07:30`), exit `12:46`, eod/carry `12:55`, verify `13:05`,
+  existing post-close check `13:20`.
+- Box trades only after YOPC misses at least two slots and the ownership lease
+  is clearly free. A healthy or still-leased primary leaves box idle.
+- Publish goes only with a confirmed lease. Box must not overwrite a newer YOPC
+  liveness heartbeat.
+- Settings stay the current v4 book: 14 symbols, 1.5% risk, 16% cap, 6
+  concurrent, cash-only, −2R halt, entries through 12:45, OR-mid stop, 2.5R,
+  2-session carry. See `daily/docs/rules_orb_v4_paper.json`.
+
+## Ownership prerequisite (fail closed without it)
+
+Per-host claim files are not a lock. Both hosts need the existing Pages git
+credential (the one that already pushes `yoraja/orb-v4-paper`) and this remote:
+
+```text
+ORB_V4_OWNERSHIP_REMOTE=https://github.com/yoraja/orb-v4-paper.git
+ORB_V4_OWNERSHIP_BRANCH=ownership
+```
+
+The lease file is `ownership.json` on branch `ownership`. From a host that
+already has the Pages git credential (nothing new is written to the command
+line):
+
+```text
+python runtime/deploy/bootstrap_ownership.py --remote https://github.com/yoraja/orb-v4-paper.git
+```
+
+The first run pushes a released bootstrap document. A later run sees
+`ownership.json` and does not replace it, including a lease that is already
+held. Do not invent a credential, tunnel, or shared folder. Until a fencing
+token is confirmed on that branch, the runner submits nothing.
+
+Account pin remains paper `J7D0` at `https://paper-api.alpaca.markets`. Never
+pass `--live` or `--arm`.
+
+## Do not touch
+
+- The dashboard repo root files listed above.
+- Any LIVE tree, LIVE task, or the shared `trading-strategy` environment.
+- `ORB v4 PAPER Recovery Close 20261109` and its scripts. The installer only
+  compares hashes and exits if they differ:
+  - `orb-v4-recovery-close-20261109.py` `58a8ff246eb12f561f49ca59a91a89f5c518518717c424ca22f17cf5898d1fa6`
+  - `orb-v4-recovery-close-20261109.ps1` `306e7ad8ff2eadc921df72c016aefba70016ef252e077b3c5f5e5d5db20e6c3d`
+  - `task-ORB-v4-PAPER-Recovery-Close-20261109.xml` `d8d3d276772a17e495fbb5ac66b334537cfc5be9b28049d6f6c5ea337a298a84`
+
+## PAPER-isolated interpreter
+
+On the box, `.venv` is a symlink into the shared trading-strategy environment.
+Do not `pip install` through it.
+
+```powershell
+$v = 'C:\Users\yogjr\.orb-v4-paper'
+# stop if .venv is a symlink; leave the link in place
+py -3.12 -m venv "$v\venv-paper"
+& "$v\venv-paper\Scripts\python.exe" -m pip install -r "$v\incoming\requirements-paper-freeze.txt"
+```
+
+Use the existing freeze already on the host. This overlay's own package is
+stdlib. Set `ORB_V4_PY` to `venv-paper\Scripts\python.exe`.
+
+## Install onto the existing runtime
+
+1. Copy `dist/orb-v4-paper-yopc-primary.tar.gz` to the host and check the
+   `.sha256` file.
+2. Extract into a staging directory, not into the Pages checkout and not over
+   `paper-secrets.json`, `run\state`, or the recovery scripts.
+3. Copy `runtime/paper_broker/failover` to
+   `C:\Users\yogjr\.orb-v4-paper\code\paper_broker\failover` (YOPC) and the
+   equivalent PAPER code directory on the box.
+4. Copy `runtime/deploy/orb-v4-role.ps1` to `C:\Users\yogjr\.orb-v4-paper\`.
+5. From `code`, run `python -m paper_broker.failover.cli self-test`.
+6. Dry-run a backup plan with no engine launch:
+
+```powershell
+$env:ORB_V4_ENGINE_ALLOW = '0'
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\yogjr\.orb-v4-paper\orb-v4-role.ps1 -Role Backup -DryRun
+```
+
+7. Patch the installed engine only if `runtime/deploy/apply_hooks.py` finds the
+   known anchors in `paper_broker/orb_v4_paper.py` (sha256
+   `97c073d4b5a85d6cbcfeeae53a0c283f3b23b803a9cf4d11f4e66b5c04f23fe7` on the
+   probed hosts). Exit and flatten anchors are unchanged. The submit anchor is
+   `o = client.submit_order(req)`. The hook inserts `before_submit()` above
+   that line and does not rename `o`. If any anchor is missing, the patcher
+   raises and leaves the file unchanged.
+8. Carry awareness for both hosts is
+   `paper_broker/failover/carry_expected_20261106.json` (AAPL, MSFT, CSCO,
+   META, WMT, with MSFT stop 529.53 and target 546.75). It does not submit
+   those orders.
+
+## Cutover (operator, not this repo)
+
+1. Stop the box `orb_v4_timer.py` daemon. Do not stop the LIVE timer.
+2. Disable the YOPC task `ORB v4 PAPER Failover Watchdog` (it still assumes
+   box is primary). Do not delete it until the new primary has a confirmed day.
+3. Register one task per host. `register-tasks.ps1` prints the definitions
+   with no changes. `-Register` performs the registration and never touches
+   `ORB v4 PAPER Recovery Close 20261109`.
+
+```powershell
+# YOPC
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\yogjr\.orb-v4-paper\register-tasks.ps1 -Register -Role Primary
+# box
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\yogjr\.orb-v4-paper\register-tasks.ps1 -Register -Role Backup
+```
+
+Equivalent `schtasks` commands, with `C:\Users\yogjr\.orb-v4-paper\orb-v4-role.ps1`
+as the role script:
+
+```text
+schtasks /Create /TN "ORB v4 PAPER Primary" /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 05:55 /RL LIMITED /F /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\Users\yogjr\.orb-v4-paper\orb-v4-role.ps1\" -Role Primary"
+schtasks /Create /TN "ORB v4 PAPER Backup" /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 06:01 /RI 5 /DU 07:25 /RL LIMITED /F /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\Users\yogjr\.orb-v4-paper\orb-v4-role.ps1\" -Role Backup"
+```
+
+If `schtasks` rejects `/RI` on a weekly trigger, use `-Register -Role Backup`
+instead. That path sets a 5-minute repetition for 7 hours 25 minutes.
+4. Leave the Monday recovery task registered and unmodified.
+
+Rollback: disable the two new tasks, start the box PAPER daemon, re-enable the
+old YOPC watchdog. The `ownership` branch can stay; idle processes do not order.
+
+
+## 13:05 verify and alerts (2026-11-10)
+
+Windows rejected the 13:05 EOD line `{today:%a %b %-d}` (`ValueError: Invalid format string`).
+The installed engine on both hosts now uses `paper_broker.ptime` (no hyphen-padding flags).
+Copy `runtime/paper_broker/ptime.py` and `runtime/paper_broker/slack_alerts.py` into the
+host `paper_broker` package, and `runtime/daily/docs/ops_orb_v4_paper.json` into `daily/docs`.
+`orb-v4-role.ps1` now sets `ORB_V4_PAPER_KEYS_FILE` to the v4-only `paper-secrets.json` when
+that env var is unset, which the primary task needs on YOPC.
+
+Direct `#grok-trades` posts stay **disabled** (`slack_alerts_enabled: false`). The hook never
+reads LIVE Slack credentials and never logs the webhook URL.
+
+When later enabled, the webhook is read from the shared file
+`C:\Users\yogjr\.grok-alerts\slack-alerts.json`
+(`{"channel":"C0C0HCTTJBU","webhook_url":"..."}`). Override the path with
+`ORB_V4_SLACK_ALERTS_FILE`. If the file's `channel` is not `C0C0HCTTJBU`, or the
+file is unreadable, the hook refuses to post and does not fall back to env.
+The box does not have that file. For backup alerts, either mirror the file onto
+the box and set `ORB_V4_SLACK_ALERTS_FILE` to that path, or set the box-side
+env var `ORB_V4_SLACK_WEBHOOK_URL` (used only when the file is absent). Do not
+paste the webhook in chat.
+
+## Untested on Windows
+
+The suite runs on Linux with a local git bare repo and fake brokers. These host
+steps were not executed: Task Scheduler registration, `py -3.12 -m venv`,
+PowerShell `ParseExact` (the format string is pinned and the Python parser is
+tested), toast notifications, the Windows git credential helper, and stopping
+the live box daemon. No Alpaca call was made.
+
+## Box backup auto-restart after a VM recycle
+
+The box backup supervisor is a nohup/`flock` process and dies when the box
+pod/VM recycles. systemd is not PID 1 on the current box and cron is not
+available, so the installer uses the same class of hook as the LIVE v3 timer:
+`ensure` from `~/.bashrc`, plus an XDG autostart entry. `ensure` starts the
+supervisor only when v4 paper keys are already in the environment. It never
+prints or writes secrets and never touches `box-secrets.json`. The flock lock
+allows only one supervisor.
+
+```bash
+bash deploy/install-box-backup-boot-hook.sh install
+```
+
+Details: `deploy/BOX_BACKUP_BOOT.md`. This does not change the 10-minute backup
+catch-up window for missed exit/eod/verify slots.
+
+## Hung HTTPS calls must not block later slots
+
+A tick (YOPC `primary-daemon`, box `backup-tick`, and the engine subprocess
+they launch) has a hard 8-minute wall-clock cap. Scan ticks are also killed
+15 seconds before 12:46 exit, 12:55 eod, or 13:05 verify, so a hung scan
+cannot overrun those slots. The box supervisor also wakes at those close
+times, not only on its 5-minute grid. A killed tick's process group is
+terminated and `run/locks/orb_v4_paper.lock` is released if it is no longer
+held.
+
+YOPC Task Scheduler triggers are unchanged (1-minute repetition, 12-minute
+`ExecutionTimeLimit`, `IgnoreNew`). The 8-minute / close-preempt cap lives
+in `orb-v4-role.ps1` and in `failover.cli` so a hung scan is gone before the
+next 1-minute trigger runs a close slot.
+
+Alpaca REST and bar-data fetches use a 10s connect / 25s read timeout, with
+bounded connect retries. An order submit that times out or drops is never
+POSTed again; the runtime looks up the order by `client_order_id` and uses
+that result, or fails closed if nothing is found.
+
+Mid-tick lease renewal is unnecessary: the 8-minute cap is shorter than every
+lease TTL (scan 12 min, exit/eod 16 min, verify 10 min). The runner already
+renews the lease at the start of each tick; the next tick renews again after
+a timeout.
+
+## Primary liveness is YOPC slot ticks only
+
+The public `heartbeat.json` is not host-scoped by itself. Only a heartbeat
+with `host=yopc` and `kind` in `scan` / `exit` / `eod` / `verify` counts as
+primary liveness for backup takeover. A box `kind=alive` publish (for
+example a recovery flatten that refreshed the dashboard) must not reset
+the missed-slot counter. If there is no usable YOPC tick, every session
+slot past the 8-minute grace is missed.
+
+The 20-second lease expiry skew is for takeover only. The current holder
+may idle or renew in that window instead of `lease_expiry_ambiguous`.
