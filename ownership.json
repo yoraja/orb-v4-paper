@@ -1,6 +1,6 @@
 {
  "account_pin_last4": "J7D0",
- "acquired_utc": "2026-11-16T14:45:22.275291+00:00",
+ "acquired_utc": "2026-11-16T15:00:22.410202+00:00",
  "completed": [
   "2026-11-11 scan 0830",
   "2026-11-12 exit 1246",
@@ -40,17 +40,17 @@
   "2026-11-16 scan 0645"
  ],
  "date": "2026-11-16",
- "epoch": 36,
- "expires_utc": "2026-11-16T14:57:22.275291+00:00",
+ "epoch": 37,
+ "expires_utc": "2026-11-16T15:12:22.410202+00:00",
  "instance": "yopc-cli",
  "kind": "scan",
  "owner": "yopc",
  "primary_host": "yopc",
  "reason": "primary",
- "renewed_utc": "2026-11-16T14:45:22.275291+00:00",
+ "renewed_utc": "2026-11-16T15:00:22.410202+00:00",
  "schema": 1,
- "slot": "0645",
+ "slot": "0700",
  "status": "holding",
- "token": "36:yopc:yopc-cli",
+ "token": "37:yopc:yopc-cli",
  "track": "v4paper"
 }
