@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "as_of": "2026-11-06",
+  "account_pin_last4": "J7D0",
+  "positions_reported": 5,
+  "open_orders_reported": 0,
+  "note": "Reconciled ORB v4 PAPER carry book for host awareness. Not a secret and not a broker export. Entry dates for the three overdue names are inferred from the 2-session carry rule. Stop and target are recorded only where the reconcile supplied them.",
+  "positions": {
+    "AAPL": {
+      "side": "short",
+      "qty": 23,
+      "entry_date": "2026-11-05",
+      "planned_exit": "2026-11-09",
+      "overdue": false,
+      "plan_stop": null,
+      "plan_target": null,
+      "recovery": false
+    },
+    "MSFT": {
+      "side": "long",
+      "qty": 15,
+      "entry_price": 534.98,
+      "entry_date": "2026-11-06",
+      "planned_exit": "2026-11-10",
+      "plan_stop": 529.53,
+      "plan_target": 546.75,
+      "overdue": false,
+      "recovery": false
+    },
+    "CSCO": {
+      "side": "short",
+      "qty": 78,
+      "entry_date": "2026-11-04",
+      "entry_date_source": "inferred_planned_exit_minus_2_sessions",
+      "planned_exit": "2026-11-06",
+      "overdue": true,
+      "plan_stop": null,
+      "plan_target": null,
+      "recovery": true,
+      "recovery_coid": "orbv4p-xrec-20261109-CSCO",
+      "recovery_date": "2026-11-09"
+    },
+    "META": {
+      "side": "short",
+      "qty": 12,
+      "entry_date": "2026-11-04",
+      "entry_date_source": "inferred_planned_exit_minus_2_sessions",
+      "planned_exit": "2026-11-06",
+      "overdue": true,
+      "plan_stop": null,
+      "plan_target": null,
+      "recovery": true,
+      "recovery_coid": "orbv4p-xrec-20261109-META",
+      "recovery_date": "2026-11-09"
+    },
+    "WMT": {
+      "side": "long",
+      "qty": 62,
+      "entry_date": "2026-11-04",
+      "entry_date_source": "inferred_planned_exit_minus_2_sessions",
+      "planned_exit": "2026-11-06",
+      "overdue": true,
+      "plan_stop": null,
+      "plan_target": null,
+      "recovery": true,
+      "recovery_coid": "orbv4p-xrec-20261109-WMT",
+      "recovery_date": "2026-11-09"
+    }
+  }
+}

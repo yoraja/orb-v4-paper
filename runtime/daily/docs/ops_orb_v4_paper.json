@@ -1,0 +1,17 @@
+{
+  "slack_alerts_enabled": false,
+  "slack_channel": "C0C0HCTTJBU",
+  "slack_prefix": "ORB v4 PAPER",
+  "webhook_env": "ORB_V4_SLACK_WEBHOOK_URL",
+  "events": [
+    "halt",
+    "auth",
+    "failed_flatten",
+    "failed_verify",
+    "failover",
+    "unfilled_exit"
+  ],
+  "webhook_file_env": "ORB_V4_SLACK_ALERTS_FILE",
+  "webhook_file_default": "C:\\Users\\yogjr\\.grok-alerts\\slack-alerts.json",
+  "webhook_file_channel": "C0C0HCTTJBU"
+}
